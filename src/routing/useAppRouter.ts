@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
+import { defaultPath, findRoute, type AppPath } from "./routes";
 
-export type AppPath = "/" | "/ui-states";
-
-const resolvePath = (pathname: string): AppPath =>
-  pathname === "/ui-states" ? "/ui-states" : "/";
+const resolvePath = (pathname: string): AppPath => findRoute(pathname).path;
 
 export function useAppRouter() {
   const [currentPath, setCurrentPath] = useState<AppPath>(() =>
@@ -11,10 +9,14 @@ export function useAppRouter() {
   );
 
   useEffect(() => {
+    if (window.location.pathname !== currentPath) {
+      window.history.replaceState({}, "", defaultPath);
+    }
+
     const handlePopState = () => setCurrentPath(resolvePath(window.location.pathname));
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
+  }, [currentPath]);
 
   const navigate = (path: AppPath) => {
     if (path === currentPath) return;
