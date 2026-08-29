@@ -1,9 +1,13 @@
 mod commands;
 mod config;
+mod db;
+mod domain;
 mod error;
 mod logging;
+mod repository;
 
 use config::AppConfig;
+use db::Database;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -44,10 +48,16 @@ pub fn run() {
                 Err(error) => tracing::warn!(%error, "app config directory unavailable"),
             }
 
-            match app.path().app_data_dir() {
-                Ok(dir) => config.app_data_dir = Some(dir),
-                Err(error) => tracing::warn!(%error, "app data directory unavailable"),
-            }
+            let data_dir = match app.path().app_data_dir() {
+                Ok(dir) => {
+                    config.app_data_dir = Some(dir.clone());
+                    dir
+                }
+                Err(error) => {
+                    tracing::error!(%error, "app data directory unavailable");
+                    return Err(error.into());
+                }
+            };
 
             tracing::info!(
                 log_level = %config.log_level,
@@ -56,7 +66,15 @@ pub fn run() {
                 "configuration ready"
             );
 
+            let db_path = data_dir.join("database.sqlite");
+            let database = Database::open(&db_path).map_err(|error| {
+                tracing::error!(%error, path = %db_path.display(), "failed to open database");
+                error
+            })?;
+            tracing::info!(path = %db_path.display(), "database ready");
+
             app.manage(config);
+            app.manage(database);
             tracing::info!("Rust backend ready");
             Ok(())
         })

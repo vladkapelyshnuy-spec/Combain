@@ -8,6 +8,7 @@ pub enum ErrorCode {
     Io,
     InvalidInput,
     Conflict,
+    Db,
     Internal,
 }
 
@@ -27,8 +28,11 @@ pub enum AppError {
     Io { message: String },
     #[error("{message}")]
     InvalidInput { message: String },
+    #[allow(dead_code)]
     #[error("{message}")]
     Conflict { message: String },
+    #[error("{message}")]
+    Db { message: String },
     /// Catch-all for unexpected failures. Used by later phases.
     #[allow(dead_code)]
     #[error("{message}")]
@@ -54,8 +58,15 @@ impl AppError {
         }
     }
 
+    #[allow(dead_code)]
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::Conflict {
+            message: message.into(),
+        }
+    }
+
+    pub fn db(message: impl Into<String>) -> Self {
+        Self::Db {
             message: message.into(),
         }
     }
@@ -73,6 +84,7 @@ impl AppError {
             Self::Io { .. } => ErrorCode::Io,
             Self::InvalidInput { .. } => ErrorCode::InvalidInput,
             Self::Conflict { .. } => ErrorCode::Conflict,
+            Self::Db { .. } => ErrorCode::Db,
             Self::Internal { .. } => ErrorCode::Internal,
         }
     }
