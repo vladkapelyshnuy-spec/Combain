@@ -1,15 +1,16 @@
 import "./App.css";
 import { AppShell } from "./layout/AppShell";
-import { HomePage } from "./pages/HomePage";
-import { UiStatesPage } from "./pages/UiStatesPage";
+import { WorkspacePage } from "./pages/WorkspacePage";
+import { findRoute } from "./routing/routes";
 import { useAppRouter } from "./routing/useAppRouter";
 
 function App() {
   const { currentPath, navigate } = useAppRouter();
+  const currentRoute = findRoute(currentPath);
 
   return (
     <AppShell currentPath={currentPath} onNavigate={navigate}>
-      {currentPath === "/ui-states" ? <UiStatesPage /> : <HomePage />}
+      <WorkspacePage route={currentRoute} />
     </AppShell>
   );
 }
