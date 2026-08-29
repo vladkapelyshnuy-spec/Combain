@@ -62,6 +62,33 @@ pub fn delete(conn: &Connection, id: SceneId) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Set `order_index` for each scene to its position in `ordered_ids`.
+/// Every ID must already belong to `project_id`; the whole call fails atomically
+/// if any ID is missing or belongs to a different project.
+pub fn reorder(
+    conn: &Connection,
+    project_id: ProjectId,
+    ordered_ids: &[SceneId],
+) -> Result<(), AppError> {
+    let tx = conn.unchecked_transaction().map_err(map_db_err)?;
+    for (index, scene_id) in ordered_ids.iter().enumerate() {
+        let rows = tx
+            .execute(
+                "UPDATE scenes SET order_index = ?3 WHERE id = ?1 AND project_id = ?2",
+                params![scene_id.to_string(), project_id.to_string(), index as i64],
+            )
+            .map_err(map_db_err)?;
+
+        if rows == 0 {
+            return Err(AppError::invalid_input(format!(
+                "scene {scene_id} does not belong to project {project_id}"
+            )));
+        }
+    }
+    tx.commit().map_err(map_db_err)?;
+    Ok(())
+}
+
 pub fn get_by_id(conn: &Connection, id: SceneId) -> Result<Option<Scene>, AppError> {
     conn.query_row(
         "SELECT id, project_id, order_index, title, narration, visual_prompt, video_prompt, duration, status
@@ -204,6 +231,36 @@ mod tests {
         assert_eq!(scenes.len(), 2);
         assert_eq!(scenes[0].id, first.id);
         assert_eq!(scenes[1].id, second.id);
+    }
+
+    #[test]
+    fn reorders_scenes_by_given_id_sequence() {
+        let db = Database::open_in_memory().expect("open");
+        let project_id = seed_project(&db);
+        let first = Scene::new(project_id, 1, "First").expect("valid scene");
+        let second = Scene::new(project_id, 2, "Second").expect("valid scene");
+        insert(&db.conn(), &first).expect("insert first");
+        insert(&db.conn(), &second).expect("insert second");
+
+        reorder(&db.conn(), project_id, &[second.id, first.id]).expect("reorder");
+
+        let scenes = list_by_project(&db.conn(), project_id).expect("list");
+        assert_eq!(scenes[0].id, second.id);
+        assert_eq!(scenes[0].order, 0);
+        assert_eq!(scenes[1].id, first.id);
+        assert_eq!(scenes[1].order, 1);
+    }
+
+    #[test]
+    fn reorder_rejects_scene_from_other_project() {
+        let db = Database::open_in_memory().expect("open");
+        let project_id = seed_project(&db);
+        let other_project_id = seed_project(&db);
+        let scene = Scene::new(other_project_id, 1, "Intro").expect("valid scene");
+        insert(&db.conn(), &scene).expect("insert");
+
+        let error = reorder(&db.conn(), project_id, &[scene.id]).expect_err("mismatched project");
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
     }
 
     #[test]

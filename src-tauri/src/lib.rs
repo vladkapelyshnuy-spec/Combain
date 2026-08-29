@@ -30,7 +30,19 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![commands::ping, commands::greet])
+        .invoke_handler(tauri::generate_handler![
+            commands::ping,
+            commands::greet,
+            commands::project_commands::create_project,
+            commands::project_commands::get_project,
+            commands::project_commands::list_projects,
+            commands::project_commands::update_project,
+            commands::scene_commands::get_scenes,
+            commands::scene_commands::create_scene,
+            commands::scene_commands::update_scene,
+            commands::scene_commands::delete_scene,
+            commands::scene_commands::reorder_scenes,
+        ])
         .setup(move |app| {
             let mut config = startup_config;
 

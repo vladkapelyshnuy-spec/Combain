@@ -1,3 +1,6 @@
+pub mod project_commands;
+pub mod scene_commands;
+
 use serde::Serialize;
 use tauri::State;
 
