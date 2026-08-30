@@ -8,6 +8,8 @@ pub enum ErrorCode {
     Io,
     InvalidInput,
     Conflict,
+    Db,
+    Provider,
     Internal,
 }
 
@@ -27,8 +29,14 @@ pub enum AppError {
     Io { message: String },
     #[error("{message}")]
     InvalidInput { message: String },
+    #[allow(dead_code)]
     #[error("{message}")]
     Conflict { message: String },
+    #[error("{message}")]
+    Db { message: String },
+    /// Failure originating from an external AI provider (network, malformed response).
+    #[error("{message}")]
+    Provider { message: String },
     /// Catch-all for unexpected failures. Used by later phases.
     #[allow(dead_code)]
     #[error("{message}")]
@@ -54,8 +62,21 @@ impl AppError {
         }
     }
 
+    #[allow(dead_code)]
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::Conflict {
+            message: message.into(),
+        }
+    }
+
+    pub fn db(message: impl Into<String>) -> Self {
+        Self::Db {
+            message: message.into(),
+        }
+    }
+
+    pub fn provider(message: impl Into<String>) -> Self {
+        Self::Provider {
             message: message.into(),
         }
     }
@@ -73,6 +94,8 @@ impl AppError {
             Self::Io { .. } => ErrorCode::Io,
             Self::InvalidInput { .. } => ErrorCode::InvalidInput,
             Self::Conflict { .. } => ErrorCode::Conflict,
+            Self::Db { .. } => ErrorCode::Db,
+            Self::Provider { .. } => ErrorCode::Provider,
             Self::Internal { .. } => ErrorCode::Internal,
         }
     }

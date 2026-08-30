@@ -7,3 +7,4 @@ Rules:
 3. Write all Rust code exclusively in the `src-tauri/` folder.
 4. Strictly adhere to the agreed Shared API Contract for IPC commands.
 5. Write clean Rust code with proper typed error handling (Result<T, E>).
+6. Before and after each Phase, strictly follow the "Codex Workflow Order" and "Phase Report Format" defined in the Codex.

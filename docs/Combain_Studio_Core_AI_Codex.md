@@ -665,3 +665,59 @@ project JSON
 - professional NLE;
 - advanced color grading;
 - arbitrary plugins.
+
+---
+
+# 8. Порядок роботи Claude
+
+Перед початком кожної Phase Claude **повинен** виконати такі кроки:
+
+1. Прочитати це ТЗ.
+2. Назвати `scope`.
+3. Назвати `out-of-scope`.
+4. Сформувати `implementation plan`.
+5. Перелічити файли, які створюються або змінюються.
+6. Перевірити API docs (якщо потрібно).
+7. Реалізувати **тільки** поточну Phase.
+8. Виконати `build`.
+9. Виконати `tests`.
+10. Виконати `lint`.
+11. Виправити помилки (якщо є).
+12. Надати **Phase Report** (за встановленим форматом).
+13. Зупинитися та чекати окремої команди на наступну Phase.
+
+---
+
+# 9. Формат Phase Report
+
+Після завершення кожної Phase Claude має видати звіт суворо за цим шаблоном:
+
+Phase: [Номер та назва]
+Status: [Success / Failed]
+
+Implemented:
+- ...
+
+Changed files:
+- ...
+
+Tests:
+- ...
+
+Manual checks:
+- ...
+
+Known limitations:
+- ...
+
+Open questions:
+- ...
+
+Ready for next phase: [YES / NO]
+
+---
+
+# 10. Перший prompt для Claude
+
+Стартова команда для агента перед початком будь-якої роботи:
+`Прочитай файл ТЗ повністю.`
