@@ -4,6 +4,7 @@ import { AppShell } from "./layout/AppShell";
 import type { Project } from "./models/project";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { ScriptScenePage } from "./pages/ScriptScenePage";
+import { StoryboardPage } from "./pages/StoryboardPage";
 import { WorkspacePage } from "./pages/WorkspacePage";
 import { findRoute } from "./routing/routes";
 import { useAppRouter } from "./routing/useAppRouter";
@@ -27,6 +28,11 @@ function App() {
       ) : currentPath === "/script" || currentPath === "/scenes" ? (
         <ScriptScenePage
           currentPath={currentPath}
+          onNavigate={navigate}
+          selectedProject={selectedProject}
+        />
+      ) : currentPath === "/storyboard" ? (
+        <StoryboardPage
           onNavigate={navigate}
           selectedProject={selectedProject}
         />
