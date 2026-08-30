@@ -1,4 +1,5 @@
 import type { MouseEvent, ReactNode } from "react";
+import type { Project } from "../models/project";
 import { findRoute, type AppPath } from "../routing/routes";
 import { Sidebar } from "./Sidebar";
 
@@ -6,10 +7,20 @@ type AppShellProps = {
   children: ReactNode;
   currentPath: AppPath;
   onNavigate: (path: AppPath) => void;
+  selectedProject: Project | null;
 };
 
-export function AppShell({ children, currentPath, onNavigate }: AppShellProps) {
+export function AppShell({ children, currentPath, onNavigate, selectedProject }: AppShellProps) {
   const currentRoute = findRoute(currentPath);
+  const projectInitials = selectedProject
+    ? selectedProject.name
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((word) => word[0])
+        .join("")
+        .toUpperCase()
+    : "NP";
 
   return (
     <div className="app-shell">
@@ -32,10 +43,10 @@ export function AppShell({ children, currentPath, onNavigate }: AppShellProps) {
         </div>
 
         <div className="project-context" aria-label="Selected project">
-          <span className="project-avatar" aria-hidden="true">NP</span>
+          <span className="project-avatar" aria-hidden="true">{projectInitials}</span>
           <span className="project-copy">
-            <span>No project selected</span>
-            <small>Local workspace</small>
+            <span>{selectedProject?.name ?? "No project selected"}</span>
+            <small>{selectedProject ? "Selected project" : "Local workspace"}</small>
           </span>
         </div>
       </header>
