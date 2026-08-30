@@ -4,10 +4,14 @@ mod db;
 mod domain;
 mod error;
 mod logging;
+mod provider;
 mod repository;
+
+use std::sync::Arc;
 
 use config::AppConfig;
 use db::Database;
+use provider::{OpenAiConfig, OpenAiTextProvider, TextProvider};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,6 +46,7 @@ pub fn run() {
             commands::scene_commands::update_scene,
             commands::scene_commands::delete_scene,
             commands::scene_commands::reorder_scenes,
+            commands::script_commands::generate_script,
         ])
         .setup(move |app| {
             let mut config = startup_config;
@@ -85,8 +90,19 @@ pub fn run() {
             })?;
             tracing::info!(path = %db_path.display(), "database ready");
 
+            let openai_config = OpenAiConfig::from_env();
+            tracing::info!(
+                base_url = %openai_config.base_url,
+                model = %openai_config.model,
+                has_api_key = openai_config.api_key.is_some(),
+                "text provider configured"
+            );
+            let text_provider: Arc<dyn TextProvider + Send + Sync> =
+                Arc::new(OpenAiTextProvider::new(openai_config));
+
             app.manage(config);
             app.manage(database);
+            app.manage(text_provider);
             tracing::info!("Rust backend ready");
             Ok(())
         })
