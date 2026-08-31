@@ -4,14 +4,19 @@ mod db;
 mod domain;
 mod error;
 mod logging;
+mod paths;
 mod provider;
 mod repository;
+mod storage;
 
 use std::sync::Arc;
 
 use config::AppConfig;
 use db::Database;
-use provider::{OpenAiConfig, OpenAiTextProvider, TextProvider};
+use provider::{
+    ImageProvider, OpenAiConfig, OpenAiImageConfig, OpenAiImageProvider, OpenAiTextProvider,
+    TextProvider,
+};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -47,6 +52,10 @@ pub fn run() {
             commands::scene_commands::delete_scene,
             commands::scene_commands::reorder_scenes,
             commands::script_commands::generate_script,
+            commands::asset_commands::generate_image,
+            commands::asset_commands::get_assets,
+            commands::asset_commands::get_asset_versions,
+            commands::asset_commands::select_asset_version,
         ])
         .setup(move |app| {
             let mut config = startup_config;
@@ -65,16 +74,11 @@ pub fn run() {
                 Err(error) => tracing::warn!(%error, "app config directory unavailable"),
             }
 
-            let data_dir = match app.path().app_data_dir() {
-                Ok(dir) => {
-                    config.app_data_dir = Some(dir.clone());
-                    dir
-                }
-                Err(error) => {
-                    tracing::error!(%error, "app data directory unavailable");
-                    return Err(error.into());
-                }
-            };
+            let data_dir = paths::portable_data_dir().map_err(|error| {
+                tracing::error!(%error, "portable data directory unavailable");
+                error
+            })?;
+            config.app_data_dir = Some(data_dir.clone());
 
             tracing::info!(
                 log_level = %config.log_level,
@@ -100,9 +104,20 @@ pub fn run() {
             let text_provider: Arc<dyn TextProvider + Send + Sync> =
                 Arc::new(OpenAiTextProvider::new(openai_config));
 
+            let openai_image_config = OpenAiImageConfig::from_env();
+            tracing::info!(
+                base_url = %openai_image_config.base_url,
+                model = %openai_image_config.model,
+                has_api_key = openai_image_config.api_key.is_some(),
+                "image provider configured"
+            );
+            let image_provider: Arc<dyn ImageProvider + Send + Sync> =
+                Arc::new(OpenAiImageProvider::new(openai_image_config));
+
             app.manage(config);
             app.manage(database);
             app.manage(text_provider);
+            app.manage(image_provider);
             tracing::info!("Rust backend ready");
             Ok(())
         })
