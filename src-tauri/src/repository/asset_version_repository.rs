@@ -31,24 +31,37 @@ pub fn insert(conn: &Connection, version: &AssetVersion) -> Result<(), AppError>
 }
 
 /// Mark exactly one version of an asset as selected, clearing any previous selection.
+/// Opens its own transaction; use [`select_version_in`] when already inside one.
 pub fn select_version(
     conn: &Connection,
     asset_id: AssetId,
     version_id: AssetVersionId,
 ) -> Result<(), AppError> {
     let tx = conn.unchecked_transaction().map_err(map_db_err)?;
-    tx.execute(
+    select_version_in(&tx, asset_id, version_id)?;
+    tx.commit().map_err(map_db_err)?;
+    Ok(())
+}
+
+/// Same as [`select_version`] but runs directly on `conn`, without opening a
+/// transaction. Callers that already hold an open transaction (e.g. image
+/// generation selecting v1) must use this to avoid nesting `BEGIN`s.
+pub fn select_version_in(
+    conn: &Connection,
+    asset_id: AssetId,
+    version_id: AssetVersionId,
+) -> Result<(), AppError> {
+    conn.execute(
         "UPDATE asset_versions SET selected = 0 WHERE asset_id = ?1",
         params![asset_id.to_string()],
     )
     .map_err(map_db_err)?;
-    let rows = tx
+    let rows = conn
         .execute(
             "UPDATE asset_versions SET selected = 1 WHERE id = ?1 AND asset_id = ?2",
             params![version_id.to_string(), asset_id.to_string()],
         )
         .map_err(map_db_err)?;
-    tx.commit().map_err(map_db_err)?;
 
     if rows == 0 {
         return Err(AppError::invalid_input(format!(

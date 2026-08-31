@@ -4,12 +4,16 @@
 //! touching business logic.
 #![allow(unused_imports)]
 
+pub mod image_provider;
+pub mod openai_image_provider;
 pub mod openai_text_provider;
 pub mod text_provider;
 
 #[cfg(test)]
 pub mod mock;
 
+pub use image_provider::{GeneratedImage, ImageProvider, ImageRequest};
+pub use openai_image_provider::{OpenAiImageConfig, OpenAiImageProvider};
 pub use openai_text_provider::{OpenAiConfig, OpenAiTextProvider};
 pub use text_provider::{
     validate_script_response, GeneratedScene, ScriptRequest, ScriptResponse, TextProvider,
