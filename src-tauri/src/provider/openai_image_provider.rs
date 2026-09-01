@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{json, Value};
 
+use crate::domain::provider_profile::ProviderProfile;
 use crate::error::AppError;
 use crate::provider::image_provider::{GeneratedImage, ImageProvider, ImageRequest};
 
@@ -16,9 +17,9 @@ const DEFAULT_MODEL: &str = "dall-e-3";
 
 /// Connection settings for the OpenAI-compatible image adapter.
 ///
-/// Reuses the same `OPENAI_API_KEY`/`OPENAI_BASE_URL` env vars as the text
-/// provider (Phase 5) since both talk to the same OpenAI-compatible host;
-/// the model is configured separately via `OPENAI_IMAGE_MODEL`.
+/// Built from the default Image [`ProviderProfile`] and its API key (see
+/// [`OpenAiImageConfig::from_profile`]). Never persisted to config files,
+/// logs, or serialized output (see the custom [`std::fmt::Debug`] impl).
 #[derive(Clone)]
 pub struct OpenAiImageConfig {
     pub api_key: Option<String>,
@@ -36,19 +37,35 @@ impl std::fmt::Debug for OpenAiImageConfig {
     }
 }
 
+impl Default for OpenAiImageConfig {
+    /// Used when no default Image provider profile is configured yet; any
+    /// request attempt fails with a clear "add a profile in Settings" error.
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            base_url: DEFAULT_BASE_URL.to_string(),
+            model: DEFAULT_MODEL.to_string(),
+        }
+    }
+}
+
 impl OpenAiImageConfig {
-    pub fn from_env() -> Self {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
-        let base_url = std::env::var("OPENAI_BASE_URL")
-            .ok()
+    /// Build settings from an Image [`ProviderProfile`] and its API key
+    /// (looked up separately from the OS credential store via
+    /// [`crate::secrets`]). A missing/empty `api_key` is not an error here,
+    /// it only surfaces once a request is actually attempted.
+    pub fn from_profile(profile: &ProviderProfile, api_key: Option<String>) -> Self {
+        let api_key = api_key.filter(|value| !value.trim().is_empty());
+        let base_url = profile
+            .base_url
+            .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let model = std::env::var("OPENAI_IMAGE_MODEL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        let model = if profile.model.trim().is_empty() {
+            DEFAULT_MODEL.to_string()
+        } else {
+            profile.model.clone()
+        };
 
         Self {
             api_key,
@@ -111,7 +128,9 @@ pub fn parse_response(body: &str, model: &str) -> Result<GeneratedImage, AppErro
 impl ImageProvider for OpenAiImageProvider {
     async fn generate_image(&self, request: &ImageRequest) -> Result<GeneratedImage, AppError> {
         let api_key = self.config.api_key.as_ref().ok_or_else(|| {
-            AppError::config("OPENAI_API_KEY is not set; cannot call the image provider")
+            AppError::config(
+                "no API key stored for the default image provider profile; add one in Settings",
+            )
         })?;
 
         let url = format!(
@@ -154,6 +173,39 @@ mod tests {
         ImageRequest {
             prompt: "a cinematic nebula".into(),
         }
+    }
+
+    fn sample_profile() -> ProviderProfile {
+        ProviderProfile::new(
+            crate::domain::provider_profile::ProviderPurpose::Image,
+            "Primary",
+            "openai",
+            Some("https://api.example.com/v1".into()),
+            "dall-e-3",
+            None,
+            true,
+        )
+        .expect("valid profile")
+    }
+
+    #[test]
+    fn from_profile_uses_profile_fields_and_given_key() {
+        let profile = sample_profile();
+        let config = OpenAiImageConfig::from_profile(&profile, Some("sk-test".into()));
+
+        assert_eq!(config.api_key, Some("sk-test".into()));
+        assert_eq!(config.base_url, "https://api.example.com/v1");
+        assert_eq!(config.model, "dall-e-3");
+    }
+
+    #[test]
+    fn from_profile_falls_back_to_defaults_and_none_key() {
+        let mut profile = sample_profile();
+        profile.base_url = None;
+        let config = OpenAiImageConfig::from_profile(&profile, None);
+
+        assert_eq!(config.api_key, None);
+        assert_eq!(config.base_url, DEFAULT_BASE_URL);
     }
 
     #[test]

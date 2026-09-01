@@ -51,6 +51,7 @@ typed_id!(AssetVersionId);
 typed_id!(TimelineId);
 typed_id!(TimelineClipId);
 typed_id!(JobId);
+typed_id!(ProviderProfileId);
 
 #[cfg(test)]
 mod tests {

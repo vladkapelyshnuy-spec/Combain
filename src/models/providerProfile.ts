@@ -1,24 +1,41 @@
-export const providerPurposes = ["text", "image", "video", "tts"] as const;
+export const providerPurposes = ["TEXT", "IMAGE", "VIDEO", "TTS"] as const;
 
 export type ProviderPurpose = (typeof providerPurposes)[number];
 export type ProviderProfileId = string;
 
+/** Backend view. The API key itself is never included — only `has_api_key`. */
 export type ProviderProfile = {
   id: ProviderProfileId;
   purpose: ProviderPurpose;
-  profileName: string;
+  profile_name: string;
   provider: string;
-  apiKey: string;
-  baseUrl: string;
+  base_url: string | null;
   model: string;
-  isDefault: boolean;
-  /** Reserved for the future TTS provider contract. */
-  voice?: string;
+  voice: string | null;
+  is_default: boolean;
+  has_api_key: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
-export type ProviderProfileDraft = Omit<ProviderProfile, "id" | "purpose">;
-export type ProviderProfilesByPurpose = Record<ProviderPurpose, ProviderProfile[]>;
+export type CreateProviderProfileInput = {
+  purpose: ProviderPurpose;
+  profile_name: string;
+  provider: string;
+  base_url: string | null;
+  model: string;
+  voice: string | null;
+  is_default: boolean;
+  api_key: string;
+};
 
-export const emptyProviderProfiles = (): ProviderProfilesByPurpose => ({
-  text: [], image: [], video: [], tts: [],
-});
+export type UpdateProviderProfileInput = {
+  profile_name: string;
+  provider: string;
+  base_url: string | null;
+  model: string;
+  voice: string | null;
+  is_default: boolean;
+  /** `null` leaves the stored API key untouched; a string rotates it. */
+  api_key: string | null;
+};

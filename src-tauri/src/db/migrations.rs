@@ -11,10 +11,16 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    id: "0001_initial",
-    sql: include_str!("../../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        id: "0001_initial",
+        sql: include_str!("../../migrations/0001_initial.sql"),
+    },
+    Migration {
+        id: "0002_provider_profiles",
+        sql: include_str!("../../migrations/0002_provider_profiles.sql"),
+    },
+];
 
 pub fn run(conn: &Connection) -> Result<(), AppError> {
     conn.execute_batch(
@@ -77,6 +83,7 @@ mod tests {
             "timelines",
             "timeline_clips",
             "jobs",
+            "provider_profiles",
         ] {
             assert!(table_exists(table), "missing table {table}");
         }
@@ -93,6 +100,6 @@ mod tests {
                 row.get(0)
             })
             .expect("query");
-        assert_eq!(count, 1);
+        assert_eq!(count, MIGRATIONS.len() as i64);
     }
 }
