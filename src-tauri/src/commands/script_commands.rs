@@ -5,25 +5,52 @@
 //! `#[tauri::command]`. The provider call happens between two separate
 //! connection scopes so the SQLite mutex is never held across an `.await`.
 
-use std::sync::Arc;
-
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::State;
 
 use crate::db::Database;
-use crate::domain::ids::ProjectId;
+use crate::domain::ids::{ProjectId, ProviderProfileId};
+use crate::domain::provider_profile::ProviderPurpose;
 use crate::domain::scene::Scene;
 use crate::error::AppError;
 use crate::provider::text_provider::{validate_script_response, ScriptRequest, ScriptResponse};
 use crate::provider::TextProvider;
-use crate::repository::{project_repository, scene_repository};
+use crate::provider::{OpenAiConfig, OpenAiTextProvider};
+use crate::repository::{project_repository, provider_profile_repository, scene_repository};
+use crate::secrets;
 
 /// Result of a successful `generate_script` call.
 #[derive(Debug, Clone, Serialize)]
 pub struct GenerateScriptResult {
     pub title: String,
     pub scenes: Vec<Scene>,
+}
+
+#[derive(Debug)]
+struct ResolvedTextConfig {
+    profile_id: ProviderProfileId,
+    config: OpenAiConfig,
+}
+
+fn resolve_text_config(db: &Database) -> Result<ResolvedTextConfig, AppError> {
+    let profile =
+        provider_profile_repository::get_default_by_purpose(&db.conn(), ProviderPurpose::Text)?
+            .ok_or_else(|| {
+                AppError::config("no default text provider profile configured; add one in Settings")
+            })?;
+    let api_key = secrets::get_secret(&profile.credential_alias)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::config(
+                "no API key stored for the default text provider profile; add one in Settings",
+            )
+        })?;
+
+    Ok(ResolvedTextConfig {
+        profile_id: profile.id,
+        config: OpenAiConfig::from_profile(&profile, Some(api_key)),
+    })
 }
 
 fn validate_request(request: &ScriptRequest) -> Result<(), AppError> {
@@ -137,16 +164,18 @@ pub async fn generate_script_impl(
 #[tauri::command]
 pub async fn generate_script(
     db: State<'_, Database>,
-    provider: State<'_, Arc<dyn TextProvider + Send + Sync>>,
     project_id: ProjectId,
     topic: String,
     style: String,
     duration_seconds: u32,
     language: String,
 ) -> Result<GenerateScriptResult, AppError> {
+    let resolved = resolve_text_config(&db)?;
+    tracing::info!(provider_profile_id = %resolved.profile_id, "text provider resolved");
+    let provider = OpenAiTextProvider::new(resolved.config);
     generate_script_impl(
         &db,
-        provider.as_ref(),
+        &provider,
         project_id,
         topic,
         style,
@@ -160,6 +189,7 @@ pub async fn generate_script(
 mod tests {
     use super::*;
     use crate::domain::project::Project;
+    use crate::domain::provider_profile::ProviderProfile;
     use crate::provider::mock::MockTextProvider;
     use crate::provider::text_provider::GeneratedScene;
 
@@ -195,6 +225,55 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn resolves_current_default_profile_id_and_secure_key() {
+        crate::secrets::install_mock_backend();
+        let db = open_db();
+        let profile = ProviderProfile::new(
+            ProviderPurpose::Text,
+            "Primary",
+            "openai-compatible",
+            Some("https://api.example.com/v1".into()),
+            "deepseek-v4-flash",
+            None,
+            true,
+        )
+        .expect("profile");
+        provider_profile_repository::insert(&db.conn(), &profile).expect("insert profile");
+        crate::secrets::set_secret(&profile.credential_alias, "secret-one").expect("store key");
+
+        let first = resolve_text_config(&db).expect("resolve first key");
+        assert_eq!(first.profile_id, profile.id);
+        assert_eq!(first.config.api_key.as_deref(), Some("secret-one"));
+        assert_eq!(first.config.model, "deepseek-v4-flash");
+
+        crate::secrets::set_secret(&profile.credential_alias, "secret-two").expect("rotate key");
+        let rotated = resolve_text_config(&db).expect("resolve rotated key");
+        assert_eq!(rotated.profile_id, profile.id);
+        assert_eq!(rotated.config.api_key.as_deref(), Some("secret-two"));
+    }
+
+    #[test]
+    fn resolving_default_profile_without_secure_key_errors() {
+        crate::secrets::install_mock_backend();
+        let db = open_db();
+        let profile = ProviderProfile::new(
+            ProviderPurpose::Text,
+            "Missing key",
+            "openai",
+            None,
+            "gpt-4o-mini",
+            None,
+            true,
+        )
+        .expect("profile");
+        provider_profile_repository::insert(&db.conn(), &profile).expect("insert profile");
+
+        let error = resolve_text_config(&db).expect_err("missing key");
+        assert_eq!(error.code(), crate::error::ErrorCode::Config);
+        assert!(error.to_string().contains("no API key stored"));
     }
 
     #[tokio::test]

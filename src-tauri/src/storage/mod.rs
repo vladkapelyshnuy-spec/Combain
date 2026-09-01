@@ -48,8 +48,35 @@ pub fn save_new_file(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Check the PNG magic bytes. OpenAI's Images API always returns PNG.
-pub fn looks_like_png(bytes: &[u8]) -> bool {
+/// Detect supported generated-image formats by their file signatures. Some
+/// OpenAI-compatible providers return JPEG or WebP even when the response is
+/// delivered through `b64_json`.
+pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-    bytes.len() >= PNG_SIGNATURE.len() && bytes[..8] == PNG_SIGNATURE
+    if bytes.starts_with(&PNG_SIGNATURE) {
+        return Some("png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("jpg");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_supported_image_formats() {
+        assert_eq!(
+            image_extension(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+            Some("png")
+        );
+        assert_eq!(image_extension(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("jpg"));
+        assert_eq!(image_extension(b"RIFF\x04\0\0\0WEBPdata"), Some("webp"));
+        assert_eq!(image_extension(b"not an image"), None);
+    }
 }
