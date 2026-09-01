@@ -41,6 +41,12 @@ export const appRoutes = [
     description: "Prepare the completed project for delivery.",
     icon: "export",
   },
+  {
+    path: "/settings",
+    label: "Settings",
+    description: "Configure application and provider preferences.",
+    icon: "settings",
+  },
 ] as const;
 
 export type AppRoute = (typeof appRoutes)[number];

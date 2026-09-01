@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::domain::provider_profile::ProviderProfile;
 use crate::error::AppError;
 use crate::provider::text_provider::{ScriptRequest, ScriptResponse, TextProvider};
 
@@ -15,8 +16,9 @@ const DEFAULT_MODEL: &str = "gpt-4o-mini";
 
 /// Connection settings for the OpenAI-compatible adapter.
 ///
-/// `api_key` is read from `OPENAI_API_KEY` and never persisted to config
-/// files, logs, or serialized output (see the custom [`std::fmt::Debug`] impl).
+/// Built from the default Text [`ProviderProfile`] and its API key (see
+/// [`OpenAiConfig::from_profile`]). Never persisted to config files, logs,
+/// or serialized output (see the custom [`std::fmt::Debug`] impl).
 #[derive(Clone)]
 pub struct OpenAiConfig {
     pub api_key: Option<String>,
@@ -34,22 +36,35 @@ impl std::fmt::Debug for OpenAiConfig {
     }
 }
 
+impl Default for OpenAiConfig {
+    /// Used when no default Text provider profile is configured yet; any
+    /// request attempt fails with a clear "add a profile in Settings" error.
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            base_url: DEFAULT_BASE_URL.to_string(),
+            model: DEFAULT_MODEL.to_string(),
+        }
+    }
+}
+
 impl OpenAiConfig {
-    /// Load settings from the environment. Missing `OPENAI_BASE_URL`/`OPENAI_MODEL`
-    /// fall back to sane defaults; a missing `OPENAI_API_KEY` is not an error here,
-    /// it only surfaces once a request is actually attempted.
-    pub fn from_env() -> Self {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
-        let base_url = std::env::var("OPENAI_BASE_URL")
-            .ok()
+    /// Build settings from a Text [`ProviderProfile`] and its API key (looked
+    /// up separately from the OS credential store via [`crate::secrets`]). A
+    /// missing/empty `api_key` is not an error here, it only surfaces once a
+    /// request is actually attempted.
+    pub fn from_profile(profile: &ProviderProfile, api_key: Option<String>) -> Self {
+        let api_key = api_key.filter(|value| !value.trim().is_empty());
+        let base_url = profile
+            .base_url
+            .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let model = std::env::var("OPENAI_MODEL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        let model = if profile.model.trim().is_empty() {
+            DEFAULT_MODEL.to_string()
+        } else {
+            profile.model.clone()
+        };
 
         Self {
             api_key,
@@ -126,7 +141,9 @@ pub fn parse_response(body: &str) -> Result<ScriptResponse, AppError> {
 impl TextProvider for OpenAiTextProvider {
     async fn generate_script(&self, request: &ScriptRequest) -> Result<ScriptResponse, AppError> {
         let api_key = self.config.api_key.as_ref().ok_or_else(|| {
-            AppError::config("OPENAI_API_KEY is not set; cannot call the text provider")
+            AppError::config(
+                "no API key stored for the default text provider profile; add one in Settings",
+            )
         })?;
 
         let url = format!(
@@ -172,6 +189,39 @@ mod tests {
             duration_seconds: 30,
             language: "en".into(),
         }
+    }
+
+    fn sample_profile() -> ProviderProfile {
+        ProviderProfile::new(
+            crate::domain::provider_profile::ProviderPurpose::Text,
+            "Primary",
+            "openai",
+            Some("https://api.example.com/v1".into()),
+            "gpt-4o",
+            None,
+            true,
+        )
+        .expect("valid profile")
+    }
+
+    #[test]
+    fn from_profile_uses_profile_fields_and_given_key() {
+        let profile = sample_profile();
+        let config = OpenAiConfig::from_profile(&profile, Some("sk-test".into()));
+
+        assert_eq!(config.api_key, Some("sk-test".into()));
+        assert_eq!(config.base_url, "https://api.example.com/v1");
+        assert_eq!(config.model, "gpt-4o");
+    }
+
+    #[test]
+    fn from_profile_falls_back_to_defaults_and_none_key() {
+        let mut profile = sample_profile();
+        profile.base_url = None;
+        let config = OpenAiConfig::from_profile(&profile, None);
+
+        assert_eq!(config.api_key, None);
+        assert_eq!(config.base_url, DEFAULT_BASE_URL);
     }
 
     #[test]

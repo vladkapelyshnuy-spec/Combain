@@ -194,6 +194,25 @@ Repository tests pass.
 
 ---
 
+# Phase 3.5 — Settings & Provider Profiles
+
+## Scope
+Реалізувати безпечне збереження API-ключів та профілів провайдерів, інтеграцію з Settings UI.
+
+### Реалізувати
+- SQLite Provider Registry (збереження конфігурації профілю, вибраних моделей та alias для ключів);
+- Secure Credentials Storage (використовувати OS Credential Manager, наприклад через crate `keyring`, для збереження API keys);
+- API ключі (secrets) заборонено зберігати у базі даних SQLite у відкритому вигляді (plaintext);
+- IPC commands для взаємодії з Settings UI.
+
+### Acceptance
+```text
+UI може зберігати профілі.
+UI може завантажувати список профілів.
+API ключі не зберігаються в plaintext.
+
+---
+
 # Phase 4 — Project / Scene API
 
 ## Scope
@@ -555,6 +574,10 @@ No secrets in repository.
 create_project()
 get_project()
 list_projects()
+
+get_provider_profiles()
+create_provider_profile()
+update_provider_profile()
 
 generate_script()
 

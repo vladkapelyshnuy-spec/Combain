@@ -4,6 +4,7 @@ import { AppShell } from "./layout/AppShell";
 import type { Project } from "./models/project";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { ScriptScenePage } from "./pages/ScriptScenePage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { StoryboardPage } from "./pages/StoryboardPage";
 import { WorkspacePage } from "./pages/WorkspacePage";
 import { findRoute } from "./routing/routes";
@@ -36,6 +37,8 @@ function App() {
           onNavigate={navigate}
           selectedProject={selectedProject}
         />
+      ) : currentPath === "/settings" ? (
+        <SettingsPage />
       ) : (
         <WorkspacePage route={currentRoute} />
       )}

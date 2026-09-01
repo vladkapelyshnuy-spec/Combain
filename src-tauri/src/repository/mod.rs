@@ -14,6 +14,7 @@ pub mod asset_repository;
 pub mod asset_version_repository;
 pub mod job_repository;
 pub mod project_repository;
+pub mod provider_profile_repository;
 pub mod scene_repository;
 pub mod timeline_clip_repository;
 pub mod timeline_repository;

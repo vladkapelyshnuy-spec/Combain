@@ -7,16 +7,19 @@ mod logging;
 mod paths;
 mod provider;
 mod repository;
+mod secrets;
 mod storage;
 
 use std::sync::Arc;
 
 use config::AppConfig;
 use db::Database;
+use domain::provider_profile::ProviderPurpose;
 use provider::{
     ImageProvider, OpenAiConfig, OpenAiImageConfig, OpenAiImageProvider, OpenAiTextProvider,
     TextProvider,
 };
+use repository::provider_profile_repository;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -56,6 +59,10 @@ pub fn run() {
             commands::asset_commands::get_assets,
             commands::asset_commands::get_asset_versions,
             commands::asset_commands::select_asset_version,
+            commands::provider_profile_commands::list_provider_profiles,
+            commands::provider_profile_commands::create_provider_profile,
+            commands::provider_profile_commands::update_provider_profile,
+            commands::provider_profile_commands::delete_provider_profile,
         ])
         .setup(move |app| {
             let mut config = startup_config;
@@ -94,7 +101,25 @@ pub fn run() {
             })?;
             tracing::info!(path = %db_path.display(), "database ready");
 
-            let openai_config = OpenAiConfig::from_env();
+            let default_text_profile =
+                provider_profile_repository::get_default_by_purpose(&database.conn(), ProviderPurpose::Text)
+                    .map_err(|error| {
+                        tracing::error!(%error, "failed to load default text provider profile");
+                        error
+                    })?;
+            let openai_config = match &default_text_profile {
+                Some(profile) => {
+                    let api_key = secrets::get_secret(&profile.credential_alias).map_err(|error| {
+                        tracing::error!(%error, "failed to read text provider API key from credential store");
+                        error
+                    })?;
+                    OpenAiConfig::from_profile(profile, api_key)
+                }
+                None => {
+                    tracing::warn!("no default text provider profile configured; text generation will fail until one is added in Settings");
+                    OpenAiConfig::default()
+                }
+            };
             tracing::info!(
                 base_url = %openai_config.base_url,
                 model = %openai_config.model,
@@ -104,7 +129,25 @@ pub fn run() {
             let text_provider: Arc<dyn TextProvider + Send + Sync> =
                 Arc::new(OpenAiTextProvider::new(openai_config));
 
-            let openai_image_config = OpenAiImageConfig::from_env();
+            let default_image_profile =
+                provider_profile_repository::get_default_by_purpose(&database.conn(), ProviderPurpose::Image)
+                    .map_err(|error| {
+                        tracing::error!(%error, "failed to load default image provider profile");
+                        error
+                    })?;
+            let openai_image_config = match &default_image_profile {
+                Some(profile) => {
+                    let api_key = secrets::get_secret(&profile.credential_alias).map_err(|error| {
+                        tracing::error!(%error, "failed to read image provider API key from credential store");
+                        error
+                    })?;
+                    OpenAiImageConfig::from_profile(profile, api_key)
+                }
+                None => {
+                    tracing::warn!("no default image provider profile configured; image generation will fail until one is added in Settings");
+                    OpenAiImageConfig::default()
+                }
+            };
             tracing::info!(
                 base_url = %openai_image_config.base_url,
                 model = %openai_image_config.model,
