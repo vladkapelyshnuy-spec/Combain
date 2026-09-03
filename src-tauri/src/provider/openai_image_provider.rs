@@ -2,7 +2,7 @@
 //!
 //! Requests `response_format: "b64_json"` so the generated image bytes come
 //! back directly in the response body, with no second HTTP round trip to
-//! fetch a URL. The Images API always returns PNG.
+//! fetch a URL. The command layer validates the returned image format.
 
 use async_trait::async_trait;
 use base64::Engine;

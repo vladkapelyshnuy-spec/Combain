@@ -5,7 +5,6 @@
 //! is never held across an `.await`.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use rusqlite::Connection;
 use tauri::State;
@@ -14,19 +13,86 @@ use crate::db::Database;
 use crate::domain::asset::{Asset, AssetType};
 use crate::domain::asset_version::AssetVersion;
 use crate::domain::audio_utils;
-use crate::domain::ids::{AssetId, AssetVersionId, SceneId};
+use crate::domain::ids::{AssetId, AssetVersionId, ProviderProfileId, SceneId};
+use crate::domain::provider_profile::ProviderPurpose;
 use crate::error::AppError;
 use crate::paths;
 use crate::provider::image_provider::ImageRequest;
 use crate::provider::video_provider::VideoRequest;
-use crate::provider::{ImageProvider, VideoProvider, VideoStatus};
-use crate::repository::{asset_repository, asset_version_repository, scene_repository};
-use crate::storage;
+use crate::provider::{ImageProvider, OpenAiImageConfig, OpenAiImageProvider, OpenAiVideoConfig, OpenAiVideoProvider, VideoProvider, VideoStatus};
+use crate::repository::{
+    asset_repository, asset_version_repository, provider_profile_repository, scene_repository,
+};
+use crate::{secrets, storage};
 
-const IMAGE_EXTENSION: &str = "png";
 const IMAGE_PROVIDER_NAME: &str = "openai";
+const IMAGE_EXTENSION: &str = "png";
 const VIDEO_EXTENSION: &str = "mp4";
 const VIDEO_PROVIDER_NAME: &str = "openai";
+
+#[derive(Debug)]
+struct ResolvedImageConfig {
+    profile_id: ProviderProfileId,
+    config: OpenAiImageConfig,
+}
+
+/// Resolve the active image provider at request time. Provider profiles and
+/// credentials can change while the application is running, so this must not
+/// be cached in Tauri managed state.
+fn resolve_image_config(db: &Database) -> Result<ResolvedImageConfig, AppError> {
+    let profile =
+        provider_profile_repository::get_default_by_purpose(&db.conn(), ProviderPurpose::Image)?
+            .ok_or_else(|| {
+                AppError::config(
+                    "no default image provider profile configured; add one in Settings",
+                )
+            })?;
+
+    let api_key = secrets::get_secret(&profile.credential_alias)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::config(
+                "no API key stored for the default image provider profile; add one in Settings",
+            )
+        })?;
+
+    Ok(ResolvedImageConfig {
+        profile_id: profile.id,
+        config: OpenAiImageConfig::from_profile(&profile, Some(api_key)),
+    })
+}
+
+#[derive(Debug)]
+struct ResolvedVideoConfig {
+    profile_id: ProviderProfileId,
+    config: OpenAiVideoConfig,
+}
+
+/// Resolve the active video provider at request time. Provider profiles and
+/// credentials can change while the application is running, so this must not
+/// be cached in Tauri managed state.
+fn resolve_video_config(db: &Database) -> Result<ResolvedVideoConfig, AppError> {
+    let profile =
+        provider_profile_repository::get_default_by_purpose(&db.conn(), ProviderPurpose::Video)?
+            .ok_or_else(|| {
+                AppError::config(
+                    "no default video provider profile configured; add one in Settings",
+                )
+            })?;
+
+    let api_key = secrets::get_secret(&profile.credential_alias)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::config(
+                "no API key stored for the default video provider profile; add one in Settings",
+            )
+        })?;
+
+    Ok(ResolvedVideoConfig {
+        profile_id: profile.id,
+        config: OpenAiVideoConfig::from_profile(&profile, Some(api_key)),
+    })
+}
 
 fn resolve_prompt(
     scene: &crate::domain::scene::Scene,
@@ -74,11 +140,9 @@ pub async fn generate_image_impl(
     }; // guard dropped before the `.await` below
 
     let generated = provider.generate_image(&request).await?;
-    if !storage::looks_like_png(&generated.bytes) {
-        return Err(AppError::provider(
-            "image provider returned data that is not a valid PNG",
-        ));
-    }
+    let image_extension = storage::image_extension(&generated.bytes).ok_or_else(|| {
+        AppError::provider("image provider returned data that is not a supported image format")
+    })?;
 
     let conn = db.conn();
     let tx = conn
@@ -100,7 +164,7 @@ pub async fn generate_image_impl(
         project_id,
         asset.id,
         version_number,
-        IMAGE_EXTENSION,
+        image_extension,
     );
     storage::save_new_file(&file_path, &generated.bytes)?;
 
@@ -137,12 +201,19 @@ pub async fn generate_image_impl(
 #[tauri::command]
 pub async fn generate_image(
     db: State<'_, Database>,
-    provider: State<'_, Arc<dyn ImageProvider + Send + Sync>>,
     scene_id: SceneId,
     prompt: Option<String>,
 ) -> Result<AssetVersion, AppError> {
+    let resolved = resolve_image_config(&db)?;
+    tracing::debug!(
+        profile_id = %resolved.profile_id,
+        base_url = %resolved.config.base_url,
+        model = %resolved.config.model,
+        "image provider resolved for request"
+    );
+    let provider = OpenAiImageProvider::new(resolved.config);
     let data_root = paths::portable_data_dir()?;
-    generate_image_impl(&db, provider.as_ref(), &data_root, scene_id, prompt).await
+    generate_image_impl(&db, &provider, &data_root, scene_id, prompt).await
 }
 
 /// Input: `scene_id`
@@ -357,19 +428,21 @@ pub async fn generate_video_impl(
 #[tauri::command]
 pub async fn generate_video(
     db: State<'_, Database>,
-    provider: State<'_, Arc<dyn VideoProvider + Send + Sync>>,
     scene_id: SceneId,
     prompt: Option<String>,
     use_image_to_video: bool,
 ) -> Result<AssetVersion, AppError> {
     let data_root = paths::portable_data_dir()?;
-    generate_video_impl(&db, provider.as_ref(), &data_root, scene_id, prompt, use_image_to_video).await
+    let config = resolve_video_config(&db)?;
+    let provider = OpenAiVideoProvider::new(config.config);
+    generate_video_impl(&db, &provider, &data_root, scene_id, prompt, use_image_to_video).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::project::Project;
+    use crate::domain::provider_profile::ProviderProfile;
     use crate::domain::scene::Scene;
     use crate::provider::image_provider::GeneratedImage;
     use crate::provider::video_provider::GeneratedVideo;
@@ -416,9 +489,73 @@ mod tests {
         })
     }
 
+    fn image_profile(name: &str, model: &str, is_default: bool) -> ProviderProfile {
+        ProviderProfile::new(
+            ProviderPurpose::Image,
+            name,
+            "openai",
+            Some("https://api.example.com/v1".into()),
+            model,
+            None,
+            is_default,
+        )
+        .expect("valid image profile")
+    }
+
     // ──────────────────────────────────────────────────────────────────────
     // Image Generation Tests
     // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn image_config_tracks_secret_rotation_and_default_switches() {
+        let db = open_db();
+        let first = image_profile("First", "image-model-one", true);
+        provider_profile_repository::insert(&db.conn(), &first).expect("insert first profile");
+
+        crate::secrets::install_mock_backend();
+        secrets::set_secret(&first.credential_alias, "image-key-one").expect("store first key");
+
+        let initial = resolve_image_config(&db).expect("resolve first profile");
+        assert_eq!(initial.profile_id, first.id);
+        assert_eq!(initial.config.api_key.as_deref(), Some("image-key-one"));
+        assert_eq!(initial.config.model, "image-model-one");
+
+        secrets::set_secret(&first.credential_alias, "image-key-rotated")
+            .expect("rotate first key");
+        let rotated = resolve_image_config(&db).expect("resolve rotated key");
+        assert_eq!(rotated.profile_id, first.id);
+        assert_eq!(rotated.config.api_key.as_deref(), Some("image-key-rotated"));
+
+        let second = image_profile("Second", "image-model-two", true);
+        provider_profile_repository::clear_default_for_purpose(
+            &db.conn(),
+            ProviderPurpose::Image,
+            second.id,
+        )
+        .expect("clear old default");
+        provider_profile_repository::insert(&db.conn(), &second).expect("insert second profile");
+        secrets::set_secret(&second.credential_alias, "image-key-two").expect("store second key");
+
+        let switched = resolve_image_config(&db).expect("resolve second profile");
+        assert_eq!(switched.profile_id, second.id);
+        assert_eq!(switched.config.api_key.as_deref(), Some("image-key-two"));
+        assert_eq!(switched.config.model, "image-model-two");
+    }
+
+    #[test]
+    fn image_config_reports_missing_secure_secret() {
+        let db = open_db();
+        let profile = image_profile("Missing secret", "image-model", true);
+        provider_profile_repository::insert(&db.conn(), &profile).expect("insert profile");
+
+        crate::secrets::install_mock_backend();
+        let error = resolve_image_config(&db).expect_err("missing secret must fail");
+
+        assert_eq!(error.code(), crate::error::ErrorCode::Config);
+        assert!(error
+            .to_string()
+            .contains("no API key stored for the default image provider profile"));
+    }
 
     #[tokio::test]
     async fn first_generation_creates_asset_and_selects_v1() {
@@ -825,6 +962,36 @@ mod tests {
                 .filter(|a| a.asset_type == AssetType::Video)
                 .count(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn jpeg_generation_uses_matching_file_extension() {
+        let db = open_db();
+        let data_root = tempfile::tempdir().expect("temp dir");
+        let scene_id = seed_scene(&db, "a nebula");
+        let jpeg_bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00];
+
+        let version = generate_image_impl(
+            &db,
+            &image_provider(&jpeg_bytes),
+            data_root.path(),
+            scene_id,
+            None,
+        )
+        .await
+        .expect("generate JPEG");
+
+        assert_eq!(
+            version
+                .file_path
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("jpg")
+        );
+        assert_eq!(
+            std::fs::read(&version.file_path).expect("read image"),
+            jpeg_bytes
         );
     }
 }

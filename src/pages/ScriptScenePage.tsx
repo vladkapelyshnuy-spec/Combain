@@ -224,10 +224,10 @@ export function ScriptScenePage({ currentPath, onNavigate, selectedProject }: Sc
       <section className="script-generator" aria-labelledby="script-generator-title">
         <div className="script-generator-heading"><div><p className="eyebrow">AI Director</p><h2 id="script-generator-title">Generate structured script</h2></div>{scriptTitle ? <span className="selected-badge">{scriptTitle}</span> : null}</div>
         <form className="generation-form" onSubmit={handleGenerate}>
-          <label>Topic<input value={generation.topic} onChange={(event) => setGeneration((value) => ({ ...value, topic: event.currentTarget.value }))} disabled={Boolean(activeAction) || scenes.length > 0} required /></label>
-          <label>Style<input value={generation.style} onChange={(event) => setGeneration((value) => ({ ...value, style: event.currentTarget.value }))} disabled={Boolean(activeAction) || scenes.length > 0} /></label>
-          <label>Duration (seconds)<input type="number" min="1" step="1" value={generation.durationSeconds} onChange={(event) => setGeneration((value) => ({ ...value, durationSeconds: event.currentTarget.value }))} disabled={Boolean(activeAction) || scenes.length > 0} required /></label>
-          <label>Language<input value={generation.language} onChange={(event) => setGeneration((value) => ({ ...value, language: event.currentTarget.value }))} disabled={Boolean(activeAction) || scenes.length > 0} required /></label>
+          <label>Topic<input value={generation.topic} onChange={(event) => { const inputValue = event.currentTarget.value; setGeneration((value) => ({ ...value, topic: inputValue })); }} disabled={Boolean(activeAction) || scenes.length > 0} required /></label>
+          <label>Style<input value={generation.style} onChange={(event) => { const inputValue = event.currentTarget.value; setGeneration((value) => ({ ...value, style: inputValue })); }} disabled={Boolean(activeAction) || scenes.length > 0} /></label>
+          <label>Duration (seconds)<input type="number" min="1" step="1" value={generation.durationSeconds} onChange={(event) => { const inputValue = event.currentTarget.value; setGeneration((value) => ({ ...value, durationSeconds: inputValue })); }} disabled={Boolean(activeAction) || scenes.length > 0} required /></label>
+          <label>Language<input value={generation.language} onChange={(event) => { const inputValue = event.currentTarget.value; setGeneration((value) => ({ ...value, language: inputValue })); }} disabled={Boolean(activeAction) || scenes.length > 0} required /></label>
           <Button type="submit" disabled={Boolean(activeAction) || scenes.length > 0}>{activeAction === "generate" ? "Generating script…" : "Generate script"}</Button>
         </form>
         {scenes.length > 0 ? <p className="form-note">Script generation is available only before scenes are created. Existing scenes are never overwritten.</p> : null}
