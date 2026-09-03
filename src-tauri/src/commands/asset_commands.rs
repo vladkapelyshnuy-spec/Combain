@@ -1,6 +1,6 @@
-//! IPC commands for [`Asset`]/[`AssetVersion`]: image generation and version
-//! selection. Mirrors the style of [`crate::commands::script_commands`]: plain,
-//! unit-testable functions over `&Connection` wrapped by thin `#[tauri::command]`s.
+//! IPC commands for [`Asset`]/[`AssetVersion`]: image, video, and TTS generation
+//! plus version selection. Mirrors the style of [`crate::commands::script_commands`]:
+//! plain, unit-testable functions over `&Connection` wrapped by thin `#[tauri::command]`s.
 //! The provider call happens between two connection scopes so the SQLite mutex
 //! is never held across an `.await`.
 
@@ -18,8 +18,12 @@ use crate::domain::provider_profile::ProviderPurpose;
 use crate::error::AppError;
 use crate::paths;
 use crate::provider::image_provider::ImageRequest;
+use crate::provider::tts_provider::TTSRequest;
 use crate::provider::video_provider::VideoRequest;
-use crate::provider::{ImageProvider, OpenAiImageConfig, OpenAiImageProvider, OpenAiVideoConfig, OpenAiVideoProvider, VideoProvider, VideoStatus};
+use crate::provider::{
+    ImageProvider, OpenAiImageConfig, OpenAiImageProvider, OpenAiTtsConfig, OpenAiTtsProvider,
+    OpenAiVideoConfig, OpenAiVideoProvider, TTSProvider, VideoProvider, VideoStatus,
+};
 use crate::repository::{
     asset_repository, asset_version_repository, provider_profile_repository, scene_repository,
 };
@@ -29,6 +33,8 @@ const IMAGE_PROVIDER_NAME: &str = "openai";
 const IMAGE_EXTENSION: &str = "png";
 const VIDEO_EXTENSION: &str = "mp4";
 const VIDEO_PROVIDER_NAME: &str = "openai";
+const TTS_PROVIDER_NAME: &str = "openai";
+const TTS_EXTENSION: &str = "mp3";
 
 #[derive(Debug)]
 struct ResolvedImageConfig {
@@ -280,7 +286,10 @@ fn find_video_asset(conn: &Connection, scene_id: SceneId) -> Result<Option<Asset
 }
 
 /// Get the selected image version's file path for Image-to-Video generation.
-fn get_selected_image_path(conn: &Connection, scene_id: SceneId) -> Result<Option<std::path::PathBuf>, AppError> {
+fn get_selected_image_path(
+    conn: &Connection,
+    scene_id: SceneId,
+) -> Result<Option<std::path::PathBuf>, AppError> {
     let image_asset = find_image_asset(conn, scene_id)?;
     if let Some(asset) = image_asset {
         let versions = asset_version_repository::list_by_asset(conn, asset.id)?;
@@ -435,7 +444,195 @@ pub async fn generate_video(
     let data_root = paths::portable_data_dir()?;
     let config = resolve_video_config(&db)?;
     let provider = OpenAiVideoProvider::new(config.config);
-    generate_video_impl(&db, &provider, &data_root, scene_id, prompt, use_image_to_video).await
+    generate_video_impl(
+        &db,
+        &provider,
+        &data_root,
+        scene_id,
+        prompt,
+        use_image_to_video,
+    )
+    .await
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// TTS Generation
+// ────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct ResolvedTtsConfig {
+    profile_id: ProviderProfileId,
+    config: OpenAiTtsConfig,
+}
+
+/// Resolve the active TTS provider at request time. Provider profiles and
+/// credentials can change while the application is running, so this must not
+/// be cached in Tauri managed state.
+fn resolve_tts_config(db: &Database) -> Result<ResolvedTtsConfig, AppError> {
+    let profile =
+        provider_profile_repository::get_default_by_purpose(&db.conn(), ProviderPurpose::Tts)?
+            .ok_or_else(|| {
+                AppError::config("no default TTS provider profile configured; add one in Settings")
+            })?;
+
+    let api_key = secrets::get_secret(&profile.credential_alias)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::config(
+                "no API key stored for the default TTS provider profile; add one in Settings",
+            )
+        })?;
+
+    Ok(ResolvedTtsConfig {
+        profile_id: profile.id,
+        config: OpenAiTtsConfig::from_profile(&profile, Some(api_key)),
+    })
+}
+
+/// Find this scene's existing audio asset, if any. A scene has at most one
+/// audio asset; regeneration adds versions to it rather than creating another.
+fn find_audio_asset(conn: &Connection, scene_id: SceneId) -> Result<Option<Asset>, AppError> {
+    let assets = asset_repository::list_by_scene(conn, scene_id)?;
+    Ok(assets
+        .into_iter()
+        .find(|asset| asset.asset_type == AssetType::Audio))
+}
+
+/// Core TTS generation logic, independent of Tauri `State`, so it can run
+/// under a plain `Connection`/`TTSProvider` (including a mock) in tests.
+pub async fn generate_tts_impl(
+    db: &Database,
+    provider: &(dyn TTSProvider + Send + Sync),
+    data_root: &Path,
+    scene_id: SceneId,
+    voice: Option<String>,
+) -> Result<AssetVersion, AppError> {
+    let (project_id, request, existing_asset, narration) = {
+        let conn = db.conn();
+        let scene = scene_repository::get_by_id(&conn, scene_id)?
+            .ok_or_else(|| AppError::invalid_input(format!("scene {scene_id} does not exist")))?;
+
+        if scene.narration.trim().is_empty() {
+            return Err(AppError::invalid_input(
+                "scene narration must not be empty for TTS generation",
+            ));
+        }
+
+        let existing_asset = find_audio_asset(&conn, scene_id)?;
+        let request = TTSRequest {
+            text: scene.narration.clone(),
+            voice,
+        };
+
+        (
+            scene.project_id,
+            request,
+            existing_asset,
+            scene.narration.clone(),
+        )
+    }; // guard dropped before the `.await` below
+
+    let generated = provider.synthesize(&request).await?;
+
+    // Validate audio format (MP3 magic bytes: 0xFF 0xFB or 0xFF 0xF3 or ID3 tag)
+    if !storage::looks_like_mp3(&generated.bytes) {
+        return Err(AppError::provider(
+            "TTS provider returned data that is not a valid MP3",
+        ));
+    }
+
+    // Pre-create asset if needed (so we have stable ID for file path)
+    let (asset, is_new_asset) = match existing_asset {
+        Some(asset) => (asset, false),
+        None => (Asset::new(scene_id, AssetType::Audio), true),
+    };
+
+    // Determine version number
+    let version_number = if is_new_asset {
+        1
+    } else {
+        let conn = db.conn();
+        next_version_number(&conn, asset.id)?
+    };
+
+    let file_path = storage::asset_version_path(
+        data_root,
+        project_id,
+        asset.id,
+        version_number,
+        TTS_EXTENSION,
+    );
+
+    // Save file and extract duration (no db lock held)
+    storage::save_new_file(&file_path, &generated.bytes)?;
+    let duration_ms = audio_utils::extract_audio_duration_ms(&file_path, &narration).await?;
+    tracing::info!(
+        "TTS audio duration: {}ms (extracted from file)",
+        duration_ms
+    );
+
+    // Persist to database
+    let conn = db.conn();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(crate::db::map_db_err)?;
+
+    if is_new_asset {
+        asset_repository::insert(&tx, &asset)?;
+    }
+
+    let mut version = AssetVersion::new(
+        asset.id,
+        version_number,
+        file_path,
+        TTS_PROVIDER_NAME,
+        generated.model.clone(),
+        format!("voice: {}", generated.voice),
+    )?;
+    asset_version_repository::insert(&tx, &version)?;
+
+    if version_number == 1 {
+        asset_version_repository::select_version_in(&tx, asset.id, version.id)?;
+        version.selected = true;
+    }
+
+    tx.commit().map_err(crate::db::map_db_err)?;
+
+    tracing::info!(
+        scene_id = %scene_id,
+        asset_id = %asset.id,
+        version = version_number,
+        "TTS audio generated"
+    );
+    Ok(version)
+}
+
+/// Input: `scene_id`, `voice` (optional; falls back to profile's default voice)
+/// Output: the newly created [`AssetVersion`]
+/// Error: [`AppError::InvalidInput`] if the scene is unknown or narration is empty;
+///        [`AppError::Config`] if no provider API key is configured;
+///        [`AppError::Provider`] on provider/network/format failure;
+///        [`AppError::Db`]/[`AppError::Io`] on storage failure
+/// Side effects: creates an `Asset` (first generation only), inserts a new
+/// `AssetVersion` row, and writes the audio file to disk. Never overwrites or
+/// deletes a previous version.
+#[tauri::command]
+pub async fn generate_tts(
+    db: State<'_, Database>,
+    scene_id: SceneId,
+    voice: Option<String>,
+) -> Result<AssetVersion, AppError> {
+    let data_root = paths::portable_data_dir()?;
+    let config = resolve_tts_config(&db)?;
+    tracing::debug!(
+        profile_id = %config.profile_id,
+        base_url = %config.config.base_url,
+        model = %config.config.model,
+        default_voice = %config.config.default_voice,
+        "TTS provider resolved for request"
+    );
+    let provider = OpenAiTtsProvider::new(config.config);
+    generate_tts_impl(&db, &provider, &data_root, scene_id, voice).await
 }
 
 #[cfg(test)]
@@ -445,12 +642,16 @@ mod tests {
     use crate::domain::provider_profile::ProviderProfile;
     use crate::domain::scene::Scene;
     use crate::provider::image_provider::GeneratedImage;
+    use crate::provider::mock::{MockImageProvider, MockTtsProvider, MockVideoProvider};
+    use crate::provider::tts_provider::GeneratedAudio;
     use crate::provider::video_provider::GeneratedVideo;
-    use crate::provider::mock::{MockImageProvider, MockVideoProvider};
     use crate::repository::project_repository;
 
     const PNG_BYTES: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xAA];
-    const MP4_BYTES: &[u8] = &[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm'];
+    const MP4_BYTES: &[u8] = &[
+        0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm',
+    ];
+    const MP3_BYTES: &[u8] = &[0xFF, 0xFB, 0x90, 0x44, 0x00, 0x00, 0x00, 0x00];
 
     fn open_db() -> Database {
         Database::open_in_memory().expect("open in-memory db")
@@ -486,6 +687,15 @@ mod tests {
             bytes: bytes.to_vec(),
             model: "video-turbo".into(),
             format: "mp4".into(),
+        })
+    }
+
+    fn tts_provider(bytes: &[u8]) -> MockTtsProvider {
+        MockTtsProvider::with_response(GeneratedAudio {
+            bytes: bytes.to_vec(),
+            model: "tts-1".into(),
+            voice: "alloy".into(),
+            format: "mp3".into(),
         })
     }
 
@@ -994,5 +1204,165 @@ mod tests {
             jpeg_bytes
         );
     }
-}
 
+    // ──────────────────────────────────────────────────────────────────────
+    // TTS Generation Tests
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn first_tts_generation_creates_asset_and_selects_v1() {
+        let db = open_db();
+        let data_root = tempfile::tempdir().expect("temp dir");
+        let scene_id = seed_scene(&db, "a nebula");
+        let provider = tts_provider(MP3_BYTES);
+
+        let version = generate_tts_impl(&db, &provider, data_root.path(), scene_id, None)
+            .await
+            .expect("generate");
+
+        assert_eq!(version.version, 1);
+        assert!(version.selected);
+        assert!(version.file_path.exists());
+        assert_eq!(version.model, "tts-1");
+        assert!(version.file_path.to_str().unwrap().ends_with(".mp3"));
+        assert!(version.prompt.contains("voice:"));
+
+        let assets = asset_repository::list_by_scene(&db.conn(), scene_id).expect("list");
+        assert_eq!(
+            assets
+                .iter()
+                .filter(|a| a.asset_type == AssetType::Audio)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn second_tts_generation_adds_version_without_changing_selection() {
+        let db = open_db();
+        let data_root = tempfile::tempdir().expect("temp dir");
+        let scene_id = seed_scene(&db, "a nebula");
+
+        let first = generate_tts_impl(
+            &db,
+            &tts_provider(MP3_BYTES),
+            data_root.path(),
+            scene_id,
+            None,
+        )
+        .await
+        .expect("first generate");
+
+        let second = generate_tts_impl(
+            &db,
+            &tts_provider(MP3_BYTES),
+            data_root.path(),
+            scene_id,
+            Some("nova".into()),
+        )
+        .await
+        .expect("second generate");
+
+        assert_eq!(second.version, 2);
+        assert!(!second.selected);
+        assert_ne!(first.file_path, second.file_path);
+        assert!(first.file_path.exists());
+        assert!(second.file_path.exists());
+
+        let versions = asset_version_repository::list_by_asset(&db.conn(), second.asset_id)
+            .expect("list versions");
+        assert_eq!(versions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_scene_for_tts() {
+        let db = open_db();
+        let data_root = tempfile::tempdir().expect("temp dir");
+
+        let error = generate_tts_impl(
+            &db,
+            &tts_provider(MP3_BYTES),
+            data_root.path(),
+            SceneId::new(),
+            None,
+        )
+        .await
+        .expect_err("unknown scene");
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn rejects_when_narration_is_empty() {
+        let db = open_db();
+        let data_root = tempfile::tempdir().expect("temp dir");
+        let project = Project::new("P", "t", "s").expect("valid project");
+        project_repository::insert(&db.conn(), &project).expect("insert project");
+        let mut scene = Scene::new(project.id, 0, "Intro").expect("valid scene");
+        scene
+            .update(
+                "Intro",
+                "", // empty narration
+                "visual prompt",
+                "video prompt",
+                5,
+                crate::domain::scene::SceneStatus::Ready,
+            )
+            .expect("update scene");
+        scene_repository::insert(&db.conn(), &scene).expect("insert scene");
+
+        let error = generate_tts_impl(
+            &db,
+            &tts_provider(MP3_BYTES),
+            data_root.path(),
+            scene.id,
+            None,
+        )
+        .await
+        .expect_err("empty narration");
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn tts_provider_failure_does_not_persist_asset() {
+        let db = open_db();
+        let data_root = tempfile::tempdir().expect("temp dir");
+        let scene_id = seed_scene(&db, "a nebula");
+        let provider = MockTtsProvider::with_error("provider unavailable");
+
+        let error = generate_tts_impl(&db, &provider, data_root.path(), scene_id, None)
+            .await
+            .expect_err("provider failure");
+        assert_eq!(error.code(), crate::error::ErrorCode::Provider);
+
+        let assets = asset_repository::list_by_scene(&db.conn(), scene_id).expect("list");
+        assert_eq!(
+            assets
+                .iter()
+                .filter(|a| a.asset_type == AssetType::Audio)
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn non_mp3_bytes_do_not_persist_audio_asset() {
+        let db = open_db();
+        let data_root = tempfile::tempdir().expect("temp dir");
+        let scene_id = seed_scene(&db, "a nebula");
+        let provider = tts_provider(b"not an audio file");
+
+        let error = generate_tts_impl(&db, &provider, data_root.path(), scene_id, None)
+            .await
+            .expect_err("invalid mp3");
+        assert_eq!(error.code(), crate::error::ErrorCode::Provider);
+
+        let assets = asset_repository::list_by_scene(&db.conn(), scene_id).expect("list");
+        assert_eq!(
+            assets
+                .iter()
+                .filter(|a| a.asset_type == AssetType::Audio)
+                .count(),
+            0
+        );
+    }
+}

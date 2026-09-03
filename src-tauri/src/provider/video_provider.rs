@@ -61,13 +61,9 @@ pub struct GeneratedVideo {
 pub trait VideoProvider: Send + Sync {
     /// Initiate an asynchronous video generation request.
     /// Returns immediately with a job handle for polling.
-    async fn request_video(
-        &self,
-        request: &VideoRequest,
-    ) -> Result<VideoGenerationJob, AppError>;
+    async fn request_video(&self, request: &VideoRequest) -> Result<VideoGenerationJob, AppError>;
 
     /// Poll the status of a previously-requested video generation job.
     /// Returns `VideoStatus::Completed` when the video is ready.
     async fn poll_status(&self, job: &VideoGenerationJob) -> Result<VideoStatus, AppError>;
 }
-

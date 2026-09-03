@@ -49,6 +49,7 @@ pub fn run() {
             commands::script_commands::generate_script,
             commands::asset_commands::generate_image,
             commands::asset_commands::generate_video,
+            commands::asset_commands::generate_tts,
             commands::asset_commands::get_assets,
             commands::asset_commands::get_asset_versions,
             commands::asset_commands::select_asset_version,

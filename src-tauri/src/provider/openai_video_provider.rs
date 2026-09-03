@@ -96,10 +96,7 @@ impl OpenAiVideoProvider {
 }
 
 /// Build the Video API request body. Pure/testable without network access.
-pub fn build_request_body(
-    request: &VideoRequest,
-    model: &str,
-) -> Result<Value, AppError> {
+pub fn build_request_body(request: &VideoRequest, model: &str) -> Result<Value, AppError> {
     let mut body = json!({
         "model": model,
         "prompt": request.prompt,
@@ -153,9 +150,7 @@ pub fn parse_poll_response(body: &str, model: &str) -> Result<VideoStatus, AppEr
             let video_b64 = envelope
                 .get("video")
                 .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    AppError::provider("completed job is missing 'video' field")
-                })?;
+                .ok_or_else(|| AppError::provider("completed job is missing 'video' field"))?;
 
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(video_b64)
@@ -184,10 +179,7 @@ pub fn parse_poll_response(body: &str, model: &str) -> Result<VideoStatus, AppEr
 
 #[async_trait]
 impl VideoProvider for OpenAiVideoProvider {
-    async fn request_video(
-        &self,
-        request: &VideoRequest,
-    ) -> Result<VideoGenerationJob, AppError> {
+    async fn request_video(&self, request: &VideoRequest) -> Result<VideoGenerationJob, AppError> {
         let api_key = self.config.api_key.as_ref().ok_or_else(|| {
             AppError::config(
                 "no API key stored for the default video provider profile; add one in Settings",
@@ -233,9 +225,11 @@ impl VideoProvider for OpenAiVideoProvider {
     }
 
     async fn poll_status(&self, job: &VideoGenerationJob) -> Result<VideoStatus, AppError> {
-        let api_key = self.config.api_key.as_ref().ok_or_else(|| {
-            AppError::config("no API key available for video provider")
-        })?;
+        let api_key = self
+            .config
+            .api_key
+            .as_ref()
+            .ok_or_else(|| AppError::config("no API key available for video provider"))?;
 
         let url = format!(
             "{}/video/generations/{}",
@@ -439,7 +433,3 @@ mod tests {
         assert_eq!(error.code(), crate::error::ErrorCode::Provider);
     }
 }
-
-
-
-

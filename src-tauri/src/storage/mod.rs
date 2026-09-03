@@ -76,6 +76,25 @@ pub fn looks_like_mp4(bytes: &[u8]) -> bool {
     &bytes[4..8] == b"ftyp"
 }
 
+/// Check for MP3 magic bytes. TTS providers typically return MP3.
+/// MP3 files can start with:
+/// - MPEG frame sync (0xFF 0xFB or 0xFF 0xF3 or other 0xFF 0xFx)
+/// - ID3v2 tag (0x49 0x44 0x33 = "ID3")
+pub fn looks_like_mp3(bytes: &[u8]) -> bool {
+    if bytes.len() < 3 {
+        return false;
+    }
+    // Check for ID3v2 tag
+    if bytes.starts_with(b"ID3") {
+        return true;
+    }
+    // Check for MPEG frame sync (0xFF followed by 0xFx or 0xEx)
+    if bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0 {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,7 +112,9 @@ mod tests {
 
     #[test]
     fn recognizes_valid_mp4() {
-        let mp4: &[u8] = &[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm'];
+        let mp4: &[u8] = &[
+            0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm',
+        ];
         assert!(looks_like_mp4(mp4));
     }
 
@@ -106,5 +127,31 @@ mod tests {
     fn rejects_short_buffer() {
         assert!(!looks_like_mp4(&[0x00, 0x00]));
     }
-}
 
+    #[test]
+    fn recognizes_valid_mp3_with_id3_tag() {
+        let mp3_id3: &[u8] = b"ID3\x03\x00\x00\x00\x00\x00\x00";
+        assert!(looks_like_mp3(mp3_id3));
+    }
+
+    #[test]
+    fn recognizes_valid_mp3_with_frame_sync() {
+        let mp3_frame: &[u8] = &[0xFF, 0xFB, 0x90, 0x44];
+        assert!(looks_like_mp3(mp3_frame));
+        let mp3_frame2: &[u8] = &[0xFF, 0xF3, 0x44, 0xC0];
+        assert!(looks_like_mp3(mp3_frame2));
+    }
+
+    #[test]
+    fn rejects_invalid_mp3() {
+        assert!(!looks_like_mp3(b"not an audio file"));
+        assert!(!looks_like_mp3(&[0xFF, 0x00])); // invalid frame sync
+        assert!(!looks_like_mp3(&[0x00, 0xFB])); // missing 0xFF
+    }
+
+    #[test]
+    fn rejects_short_buffer_mp3() {
+        assert!(!looks_like_mp3(&[0xFF]));
+        assert!(!looks_like_mp3(&[]));
+    }
+}

@@ -1,5 +1,6 @@
-//! In-memory [`TextProvider`]/[`ImageProvider`]/[`VideoProvider`] used by
-//! command tests so they never hit a network or a paid API.
+//! In-memory providers used by command tests so they never hit a network
+//! or a paid API: [`TextProvider`], [`ImageProvider`], [`VideoProvider`],
+//! [`TTSProvider`].
 
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -7,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::AppError;
 use crate::provider::image_provider::{GeneratedImage, ImageProvider, ImageRequest};
 use crate::provider::text_provider::{ScriptRequest, ScriptResponse, TextProvider};
+use crate::provider::tts_provider::{GeneratedAudio, TTSProvider, TTSRequest};
 use crate::provider::video_provider::{
     GeneratedVideo, VideoGenerationJob, VideoProvider, VideoRequest, VideoStatus,
 };
@@ -102,10 +104,7 @@ impl MockVideoProvider {
 
 #[async_trait]
 impl VideoProvider for MockVideoProvider {
-    async fn request_video(
-        &self,
-        _request: &VideoRequest,
-    ) -> Result<VideoGenerationJob, AppError> {
+    async fn request_video(&self, _request: &VideoRequest) -> Result<VideoGenerationJob, AppError> {
         Ok(VideoGenerationJob {
             operation_id: "mock_op_123".to_string(),
         })
@@ -130,3 +129,34 @@ impl VideoProvider for MockVideoProvider {
     }
 }
 
+pub struct MockTtsProvider {
+    response: Mutex<Option<Result<GeneratedAudio, String>>>,
+}
+
+impl MockTtsProvider {
+    pub fn with_response(audio: GeneratedAudio) -> Self {
+        Self {
+            response: Mutex::new(Some(Ok(audio))),
+        }
+    }
+
+    pub fn with_error(message: impl Into<String>) -> Self {
+        Self {
+            response: Mutex::new(Some(Err(message.into()))),
+        }
+    }
+}
+
+#[async_trait]
+impl TTSProvider for MockTtsProvider {
+    async fn synthesize(&self, _request: &TTSRequest) -> Result<GeneratedAudio, AppError> {
+        let mut guard = self.response.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.take() {
+            Some(Ok(audio)) => Ok(audio),
+            Some(Err(message)) => Err(AppError::provider(message)),
+            None => Err(AppError::provider(
+                "mock TTS provider has no response configured",
+            )),
+        }
+    }
+}
