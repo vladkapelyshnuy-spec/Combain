@@ -1,12 +1,15 @@
-//! In-memory [`TextProvider`]/[`ImageProvider`] used by command tests so they
-//! never hit a network or a paid API.
+//! In-memory [`TextProvider`]/[`ImageProvider`]/[`VideoProvider`] used by
+//! command tests so they never hit a network or a paid API.
 
 use async_trait::async_trait;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::error::AppError;
 use crate::provider::image_provider::{GeneratedImage, ImageProvider, ImageRequest};
 use crate::provider::text_provider::{ScriptRequest, ScriptResponse, TextProvider};
+use crate::provider::video_provider::{
+    GeneratedVideo, VideoGenerationJob, VideoProvider, VideoRequest, VideoStatus,
+};
 
 pub struct MockTextProvider {
     response: Mutex<Option<Result<ScriptResponse, String>>>,
@@ -71,3 +74,59 @@ impl ImageProvider for MockImageProvider {
         }
     }
 }
+
+pub struct MockVideoProvider {
+    response: Mutex<Option<Result<GeneratedVideo, String>>>,
+    /// Simulates async delay: poll returns Pending until this counter exceeds threshold.
+    poll_count: Arc<Mutex<u32>>,
+    polls_until_complete: u32,
+}
+
+impl MockVideoProvider {
+    pub fn with_response(response: GeneratedVideo) -> Self {
+        Self {
+            response: Mutex::new(Some(Ok(response))),
+            poll_count: Arc::new(Mutex::new(0)),
+            polls_until_complete: 2,
+        }
+    }
+
+    pub fn with_error(message: impl Into<String>) -> Self {
+        Self {
+            response: Mutex::new(Some(Err(message.into()))),
+            poll_count: Arc::new(Mutex::new(0)),
+            polls_until_complete: 0,
+        }
+    }
+}
+
+#[async_trait]
+impl VideoProvider for MockVideoProvider {
+    async fn request_video(
+        &self,
+        _request: &VideoRequest,
+    ) -> Result<VideoGenerationJob, AppError> {
+        Ok(VideoGenerationJob {
+            operation_id: "mock_op_123".to_string(),
+        })
+    }
+
+    async fn poll_status(&self, _job: &VideoGenerationJob) -> Result<VideoStatus, AppError> {
+        let mut count = self.poll_count.lock().unwrap_or_else(|p| p.into_inner());
+        *count += 1;
+
+        if *count < self.polls_until_complete {
+            return Ok(VideoStatus::InProgress);
+        }
+
+        let mut guard = self.response.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.take() {
+            Some(Ok(video)) => Ok(VideoStatus::Completed(video)),
+            Some(Err(message)) => Ok(VideoStatus::Failed(message)),
+            None => Err(AppError::provider(
+                "mock video provider has no response configured",
+            )),
+        }
+    }
+}
+

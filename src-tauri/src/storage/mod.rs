@@ -53,3 +53,47 @@ pub fn looks_like_png(bytes: &[u8]) -> bool {
     const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
     bytes.len() >= PNG_SIGNATURE.len() && bytes[..8] == PNG_SIGNATURE
 }
+
+/// Check the MP4 magic bytes. Video providers should return MP4.
+/// MP4 files begin with `ftyp` box signature at byte offset 4.
+pub fn looks_like_mp4(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 {
+        return false;
+    }
+    // MP4 starts with: [size (4 bytes)][ftyp (4 bytes)][brand (4+ bytes)]
+    // We check for "ftyp" at offset 4
+    &bytes[4..8] == b"ftyp"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_valid_png() {
+        let png: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xAA];
+        assert!(looks_like_png(png));
+    }
+
+    #[test]
+    fn rejects_invalid_png() {
+        assert!(!looks_like_png(b"not a png"));
+    }
+
+    #[test]
+    fn recognizes_valid_mp4() {
+        let mp4: &[u8] = &[0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm'];
+        assert!(looks_like_mp4(mp4));
+    }
+
+    #[test]
+    fn rejects_invalid_mp4() {
+        assert!(!looks_like_mp4(b"not a video"));
+    }
+
+    #[test]
+    fn rejects_short_buffer() {
+        assert!(!looks_like_mp4(&[0x00, 0x00]));
+    }
+}
+

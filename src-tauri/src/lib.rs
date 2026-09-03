@@ -17,7 +17,7 @@ use db::Database;
 use domain::provider_profile::ProviderPurpose;
 use provider::{
     ImageProvider, OpenAiConfig, OpenAiImageConfig, OpenAiImageProvider, OpenAiTextProvider,
-    TextProvider,
+    OpenAiVideoConfig, OpenAiVideoProvider, TextProvider, VideoProvider,
 };
 use repository::provider_profile_repository;
 use tauri::Manager;
@@ -56,6 +56,7 @@ pub fn run() {
             commands::scene_commands::reorder_scenes,
             commands::script_commands::generate_script,
             commands::asset_commands::generate_image,
+            commands::asset_commands::generate_video,
             commands::asset_commands::get_assets,
             commands::asset_commands::get_asset_versions,
             commands::asset_commands::select_asset_version,
@@ -157,10 +158,39 @@ pub fn run() {
             let image_provider: Arc<dyn ImageProvider + Send + Sync> =
                 Arc::new(OpenAiImageProvider::new(openai_image_config));
 
+            let default_video_profile =
+                provider_profile_repository::get_default_by_purpose(&database.conn(), ProviderPurpose::Video)
+                    .map_err(|error| {
+                        tracing::error!(%error, "failed to load default video provider profile");
+                        error
+                    })?;
+            let openai_video_config = match &default_video_profile {
+                Some(profile) => {
+                    let api_key = secrets::get_secret(&profile.credential_alias).map_err(|error| {
+                        tracing::error!(%error, "failed to read video provider API key from credential store");
+                        error
+                    })?;
+                    OpenAiVideoConfig::from_profile(profile, api_key)
+                }
+                None => {
+                    tracing::warn!("no default video provider profile configured; video generation will fail until one is added in Settings");
+                    OpenAiVideoConfig::default()
+                }
+            };
+            tracing::info!(
+                base_url = %openai_video_config.base_url,
+                model = %openai_video_config.model,
+                has_api_key = openai_video_config.api_key.is_some(),
+                "video provider configured"
+            );
+            let video_provider: Arc<dyn VideoProvider + Send + Sync> =
+                Arc::new(OpenAiVideoProvider::new(openai_video_config));
+
             app.manage(config);
             app.manage(database);
             app.manage(text_provider);
             app.manage(image_provider);
+            app.manage(video_provider);
             tracing::info!("Rust backend ready");
             Ok(())
         })

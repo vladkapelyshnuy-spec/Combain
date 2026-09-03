@@ -7,6 +7,7 @@
 
 pub mod asset;
 pub mod asset_version;
+pub mod audio_utils;
 pub mod ids;
 pub mod job;
 pub mod project;
