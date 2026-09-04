@@ -359,6 +359,7 @@ pub async fn generate_video_impl(
             prompt,
             source_image_path,
             target_duration_ms,
+            scene_duration_sec: scene.duration,
         };
 
         (scene.project_id, request, existing_asset)
@@ -466,10 +467,7 @@ pub async fn generate_video(
     let resolved = resolve_video_provider(&db)?;
 
     match resolved {
-        ResolvedVideoProvider::RoyalTechno {
-            profile_id,
-            config,
-        } => {
+        ResolvedVideoProvider::RoyalTechno { profile_id, config } => {
             tracing::debug!(
                 profile_id = %profile_id,
                 base_url = %config.base_url,
@@ -487,10 +485,7 @@ pub async fn generate_video(
             )
             .await
         }
-        ResolvedVideoProvider::OpenAI {
-            profile_id,
-            config,
-        } => {
+        ResolvedVideoProvider::OpenAI { profile_id, config } => {
             tracing::debug!(
                 profile_id = %profile_id,
                 base_url = %config.base_url,
