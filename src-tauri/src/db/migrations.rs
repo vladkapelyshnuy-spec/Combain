@@ -20,6 +20,10 @@ const MIGRATIONS: &[Migration] = &[
         id: "0002_provider_profiles",
         sql: include_str!("../../migrations/0002_provider_profiles.sql"),
     },
+    Migration {
+        id: "0003_royaltechno_video_provider",
+        sql: include_str!("../../migrations/0003_royaltechno_video_provider.sql"),
+    },
 ];
 
 pub fn run(conn: &Connection) -> Result<(), AppError> {

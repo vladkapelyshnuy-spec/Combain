@@ -22,7 +22,8 @@ use crate::provider::tts_provider::TTSRequest;
 use crate::provider::video_provider::VideoRequest;
 use crate::provider::{
     ImageProvider, OpenAiImageConfig, OpenAiImageProvider, OpenAiTtsConfig, OpenAiTtsProvider,
-    OpenAiVideoConfig, OpenAiVideoProvider, TTSProvider, VideoProvider, VideoStatus,
+    OpenAiVideoConfig, OpenAiVideoProvider, RoyalTechnoConfig, RoyalTechnoVideoProvider,
+    TTSProvider, VideoProvider, VideoStatus,
 };
 use crate::repository::{
     asset_repository, asset_version_repository, provider_profile_repository, scene_repository,
@@ -69,15 +70,21 @@ fn resolve_image_config(db: &Database) -> Result<ResolvedImageConfig, AppError> 
 }
 
 #[derive(Debug)]
-struct ResolvedVideoConfig {
-    profile_id: ProviderProfileId,
-    config: OpenAiVideoConfig,
+enum ResolvedVideoProvider {
+    OpenAI {
+        profile_id: ProviderProfileId,
+        config: OpenAiVideoConfig,
+    },
+    RoyalTechno {
+        profile_id: ProviderProfileId,
+        config: RoyalTechnoConfig,
+    },
 }
 
 /// Resolve the active video provider at request time. Provider profiles and
 /// credentials can change while the application is running, so this must not
 /// be cached in Tauri managed state.
-fn resolve_video_config(db: &Database) -> Result<ResolvedVideoConfig, AppError> {
+fn resolve_video_provider(db: &Database) -> Result<ResolvedVideoProvider, AppError> {
     let profile =
         provider_profile_repository::get_default_by_purpose(&db.conn(), ProviderPurpose::Video)?
             .ok_or_else(|| {
@@ -94,10 +101,24 @@ fn resolve_video_config(db: &Database) -> Result<ResolvedVideoConfig, AppError> 
             )
         })?;
 
-    Ok(ResolvedVideoConfig {
-        profile_id: profile.id,
-        config: OpenAiVideoConfig::from_profile(&profile, Some(api_key)),
-    })
+    // Route based on provider
+    match profile.provider.as_str() {
+        "royaltechno" => Ok(ResolvedVideoProvider::RoyalTechno {
+            profile_id: profile.id,
+            config: RoyalTechnoConfig::new(
+                api_key,
+                profile.base_url.clone(),
+                Some(profile.model.clone()),
+            ),
+        }),
+        "openai" => Ok(ResolvedVideoProvider::OpenAI {
+            profile_id: profile.id,
+            config: OpenAiVideoConfig::from_profile(&profile, Some(api_key)),
+        }),
+        unknown => Err(AppError::config(format!(
+            "unknown video provider: {unknown} (supported: openai, royaltechno)"
+        ))),
+    }
 }
 
 fn resolve_prompt(
@@ -442,17 +463,52 @@ pub async fn generate_video(
     use_image_to_video: bool,
 ) -> Result<AssetVersion, AppError> {
     let data_root = paths::portable_data_dir()?;
-    let config = resolve_video_config(&db)?;
-    let provider = OpenAiVideoProvider::new(config.config);
-    generate_video_impl(
-        &db,
-        &provider,
-        &data_root,
-        scene_id,
-        prompt,
-        use_image_to_video,
-    )
-    .await
+    let resolved = resolve_video_provider(&db)?;
+
+    match resolved {
+        ResolvedVideoProvider::RoyalTechno {
+            profile_id,
+            config,
+        } => {
+            tracing::debug!(
+                profile_id = %profile_id,
+                base_url = %config.base_url,
+                model = %config.model,
+                "RoyalTechno video provider resolved for request"
+            );
+            let provider = RoyalTechnoVideoProvider::new(config);
+            generate_video_impl(
+                &db,
+                &provider,
+                &data_root,
+                scene_id,
+                prompt,
+                use_image_to_video,
+            )
+            .await
+        }
+        ResolvedVideoProvider::OpenAI {
+            profile_id,
+            config,
+        } => {
+            tracing::debug!(
+                profile_id = %profile_id,
+                base_url = %config.base_url,
+                model = %config.model,
+                "OpenAI video provider resolved for request"
+            );
+            let provider = OpenAiVideoProvider::new(config);
+            generate_video_impl(
+                &db,
+                &provider,
+                &data_root,
+                scene_id,
+                prompt,
+                use_image_to_video,
+            )
+            .await
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

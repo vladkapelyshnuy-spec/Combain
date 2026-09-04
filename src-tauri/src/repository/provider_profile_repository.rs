@@ -275,8 +275,9 @@ mod tests {
         assert_eq!(text_profiles.len(), 1);
         assert_eq!(text_profiles[0].id, text_profile.id);
 
+        // Migration 0003 adds a RoyalTechno Video provider, so we expect 3 profiles total
         let all = list_all(&db.conn()).expect("list all");
-        assert_eq!(all.len(), 2);
+        assert_eq!(all.len(), 3);
     }
 
     #[test]

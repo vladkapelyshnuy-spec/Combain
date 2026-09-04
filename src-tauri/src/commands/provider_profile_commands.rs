@@ -294,8 +294,14 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("to_dto");
 
-        assert_eq!(profiles.len(), 1);
-        assert!(profiles[0].has_api_key);
+        // Migration 0003 adds a RoyalTechno Video provider, so we expect 2 profiles total
+        assert_eq!(profiles.len(), 2);
+        // Find the profile we created (not the migrated one)
+        let created_profile = profiles
+            .iter()
+            .find(|p| p.profile_name != "RoyalTechno Video")
+            .expect("find created profile");
+        assert!(created_profile.has_api_key);
     }
 
     #[test]

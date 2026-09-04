@@ -9,6 +9,7 @@ pub mod openai_image_provider;
 pub mod openai_text_provider;
 pub mod openai_tts_provider;
 pub mod openai_video_provider;
+pub mod royaltechno_video_provider;
 pub mod text_provider;
 pub mod tts_provider;
 pub mod video_provider;
@@ -21,6 +22,7 @@ pub use openai_image_provider::{OpenAiImageConfig, OpenAiImageProvider};
 pub use openai_text_provider::{OpenAiConfig, OpenAiTextProvider};
 pub use openai_tts_provider::{OpenAiTtsConfig, OpenAiTtsProvider};
 pub use openai_video_provider::{OpenAiVideoConfig, OpenAiVideoProvider};
+pub use royaltechno_video_provider::{RoyalTechnoConfig, RoyalTechnoVideoProvider};
 pub use text_provider::{
     validate_script_response, GeneratedScene, ScriptRequest, ScriptResponse, TextProvider,
 };
