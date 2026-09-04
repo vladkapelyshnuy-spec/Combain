@@ -312,6 +312,7 @@ mod tests {
             prompt: "a cinematic space scene".into(),
             source_image_path: None,
             target_duration_ms: 5000,
+            scene_duration_sec: 6,
         }
     }
 

@@ -109,11 +109,8 @@ struct JobError {
 ///
 /// CRITICAL: If source_image_path is provided, reads the file from disk and converts
 /// to a base64 data URI for inline submission (no external hosting required).
-fn build_request_body(
-    request: &VideoRequest,
-    model: &str,
-) -> Result<Value, AppError> {
-    let duration_sec = (request.target_duration_ms / 1000).max(2).min(15) as u64;
+fn build_request_body(request: &VideoRequest, model: &str) -> Result<Value, AppError> {
+    let duration_sec = normalize_duration_sec(request.scene_duration_sec);
 
     let mut input = json!({
         "prompt": request.prompt,
@@ -131,6 +128,23 @@ fn build_request_body(
         "model": model,
         "input": input,
     }))
+}
+
+/// RoyalTechno's `omni-flash` model accepts only these discrete durations.
+/// Choose the nearest one without changing the duration stored on the scene;
+/// exact ties round upward so a requested scene is not shortened arbitrarily.
+fn normalize_duration_sec(duration_sec: u32) -> u32 {
+    const SUPPORTED_DURATIONS: [u32; 4] = [4, 6, 8, 10];
+
+    SUPPORTED_DURATIONS
+        .into_iter()
+        .min_by_key(|candidate| {
+            (
+                candidate.abs_diff(duration_sec),
+                std::cmp::Reverse(*candidate),
+            )
+        })
+        .expect("supported duration list is non-empty")
 }
 
 /// Read an image file from disk and convert to a base64 data URI.
@@ -198,9 +212,9 @@ fn parse_status_response(body: &str, model: &str) -> Result<VideoStatus, AppErro
         "queued" => Ok(VideoStatus::Pending),
         "processing" => Ok(VideoStatus::InProgress),
         "succeeded" => {
-            let output = response.output.ok_or_else(|| {
-                AppError::provider("job succeeded but output is missing")
-            })?;
+            let output = response
+                .output
+                .ok_or_else(|| AppError::provider("job succeeded but output is missing"))?;
 
             if output.output_type != "video" {
                 return Err(AppError::provider(format!(
@@ -340,9 +354,9 @@ impl VideoProvider for RoyalTechnoVideoProvider {
                     let response: JobStatusResponse = serde_json::from_str(&text)
                         .map_err(|error| AppError::provider(format!("invalid JSON: {error}")))?;
 
-                    let output = response.output.ok_or_else(|| {
-                        AppError::provider("succeeded job missing output")
-                    })?;
+                    let output = response
+                        .output
+                        .ok_or_else(|| AppError::provider("succeeded job missing output"))?;
 
                     tracing::debug!("downloading video from: {}", output.url);
 
@@ -406,13 +420,21 @@ mod tests {
             prompt: "A serene mountain landscape".to_string(),
             source_image_path: None,
             target_duration_ms: 5000,
+            scene_duration_sec: 6,
         };
 
         let body = build_request_body(&request, "omni-flash").expect("build body");
         assert_eq!(body["model"], "omni-flash");
         assert_eq!(body["input"]["prompt"], "A serene mountain landscape");
-        assert_eq!(body["input"]["duration_sec"], 5);
+        assert_eq!(body["input"]["duration_sec"], 6);
         assert!(body["input"].get("start_image_url").is_none());
+    }
+
+    #[test]
+    fn normalizes_omni_flash_duration_to_nearest_supported_value() {
+        for (requested, expected) in [(4, 4), (5, 6), (6, 6), (7, 8), (8, 8), (10, 10)] {
+            assert_eq!(normalize_duration_sec(requested), expected);
+        }
     }
 
     #[test]
@@ -449,4 +471,3 @@ mod tests {
         }
     }
 }
-

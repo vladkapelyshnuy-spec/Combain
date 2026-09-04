@@ -22,6 +22,9 @@ pub struct VideoRequest {
     /// Target duration in milliseconds (estimated from audio narration).
     /// Phase 8 TTS will provide the real audio duration; this is a mock estimate.
     pub target_duration_ms: u64,
+    /// The duration configured on the Combain scene, in seconds.
+    /// Provider adapters may use this for provider-specific duration constraints.
+    pub scene_duration_sec: u32,
 }
 
 /// Handle for an asynchronous video generation job.

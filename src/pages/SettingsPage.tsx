@@ -34,6 +34,12 @@ const purposeCopy: Record<ProviderPurpose, { label: string; description: string 
   TTS: { label: "TTS", description: "Voice and narration synthesis providers." },
 };
 
+const royalTechnoModels = ["omni-flash", "veo-3.1", "seedance-2.0"] as const;
+
+function isRoyalTechnoModel(model: string) {
+  return royalTechnoModels.some((option) => option === model);
+}
+
 const emptyDraft = (isDefault = false): ProfileDraft => ({
   profileName: "",
   provider: "",
@@ -113,6 +119,15 @@ export function SettingsPage() {
 
   const updateDraft = <Field extends keyof ProfileDraft>(field: Field, value: ProfileDraft[Field]) => {
     setDraft((current) => ({ ...current, [field]: value }));
+    setFormError(null);
+  };
+
+  const updateVideoProvider = (value: string) => {
+    setDraft((current) => ({
+      ...current,
+      provider: value,
+      model: value === "royaltechno" && !current.model.trim() ? "omni-flash" : current.model,
+    }));
     setFormError(null);
   };
 
@@ -253,10 +268,10 @@ export function SettingsPage() {
                   <div className="provider-editor-heading"><div><p className="eyebrow">{editor.profileId ? "Edit profile" : "New profile"}</p><h3 id={`${purpose}-editor-title`}>{editor.profileId ? "Edit profile" : "New profile"}</h3></div></div>
                   <div className="provider-editor-grid">
                     <label>Profile Name<input value={draft.profileName} onChange={(event) => updateDraft("profileName", event.currentTarget.value)} required /></label>
-                    <label>Provider<input value={draft.provider} onChange={(event) => updateDraft("provider", event.currentTarget.value)} placeholder="Provider name" required /></label>
+                    {purpose === "VIDEO" ? <label>Provider<input list="video-provider-options" value={draft.provider} onChange={(event) => updateVideoProvider(event.currentTarget.value)} placeholder="Select or enter provider" required /><datalist id="video-provider-options"><option value="openai">OpenAI-compatible</option><option value="royaltechno">RoyalTechno</option></datalist></label> : <label>Provider<input value={draft.provider} onChange={(event) => updateDraft("provider", event.currentTarget.value)} placeholder="Provider name" required /></label>}
                     <label className="provider-editor-wide">API Key<span className="password-field"><input type={showApiKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => updateDraft("apiKey", event.currentTarget.value)} placeholder={editor.profileId ? "Leave blank to keep current key" : "Required"} autoComplete="off" spellCheck={false} /><Button variant="secondary" onClick={() => setShowApiKey((visible) => !visible)} aria-pressed={showApiKey}>{showApiKey ? "Hide" : "Show"}</Button></span></label>
                     <label>Base URL<input type="url" value={draft.baseUrl} onChange={(event) => updateDraft("baseUrl", event.currentTarget.value)} placeholder="https://api.example.com/v1" /></label>
-                    <label>Model<input value={draft.model} onChange={(event) => updateDraft("model", event.currentTarget.value)} placeholder="Provider model name" /></label>
+                    {purpose === "VIDEO" && draft.provider === "royaltechno" ? <label>Model<select value={isRoyalTechnoModel(draft.model) ? draft.model : "custom"} onChange={(event) => { const value = event.currentTarget.value; if (value !== "custom") updateDraft("model", value); }}><option value="omni-flash">omni-flash</option><option value="veo-3.1">veo-3.1</option><option value="seedance-2.0">seedance-2.0</option><option value="custom">Custom model</option></select>{!isRoyalTechnoModel(draft.model) ? <input value={draft.model} onChange={(event) => updateDraft("model", event.currentTarget.value)} placeholder="Custom model name" /> : null}</label> : <label>Model<input value={draft.model} onChange={(event) => updateDraft("model", event.currentTarget.value)} placeholder="Provider model name" /></label>}
                     {purpose === "TTS" ? <label className="provider-editor-wide">Voice<input value={draft.voice} onChange={(event) => updateDraft("voice", event.currentTarget.value)} placeholder="Voice name" /></label> : null}
                     <label className="default-checkbox provider-editor-wide"><input type="checkbox" checked={draft.isDefault} onChange={(event) => updateDraft("isDefault", event.currentTarget.checked)} /><span>Use as Default for {copy.label}</span></label>
                   </div>

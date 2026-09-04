@@ -6,6 +6,14 @@ export function generateImage(sceneId: SceneId, prompt: string): Promise<AssetVe
   return invoke<AssetVersion>("generate_image", { sceneId, prompt });
 }
 
+export function generateVideo(
+  sceneId: SceneId,
+  prompt: string,
+  useImageToVideo: boolean,
+): Promise<AssetVersion> {
+  return invoke<AssetVersion>("generate_video", { sceneId, prompt, useImageToVideo });
+}
+
 export function getAssets(sceneId: SceneId): Promise<Asset[]> {
   return invoke<Asset[]>("get_assets", { sceneId });
 }

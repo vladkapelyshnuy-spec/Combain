@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, ErrorState, LoadingState } from "../components/ui";
 import { SectionIcon } from "../components/SectionIcon";
-import type { Asset, AssetVersion, AssetVersionId } from "../models/asset";
+import type { Asset, AssetType, AssetVersion, AssetVersionId } from "../models/asset";
 import type { Project } from "../models/project";
 import type { Scene, SceneId } from "../models/scene";
 import type { AppPath } from "../routing/routes";
 import {
   generateImage,
+  generateVideo,
   getAssetFileUrl,
   getAssets,
   getAssetVersions,
@@ -20,14 +21,16 @@ type StoryboardPageProps = {
   selectedProject: Project | null;
 };
 
-type SceneImageState = {
+type SceneMediaState = {
   asset: Asset | null;
   versions: AssetVersion[];
   previewVersionId: AssetVersionId | null;
   error: string | null;
 };
 
-const emptyImageState = (): SceneImageState => ({
+type VideoGenerationMode = "image" | "text";
+
+const emptyMediaState = (): SceneMediaState => ({
   asset: null,
   versions: [],
   previewVersionId: null,
@@ -38,22 +41,29 @@ function formatStatus(status: Scene["status"]) {
   return status.charAt(0) + status.slice(1).toLowerCase();
 }
 
-async function loadSceneImage(sceneId: SceneId): Promise<SceneImageState> {
+async function loadSceneMedia(
+  sceneId: SceneId,
+  assetType: Extract<AssetType, "IMAGE" | "VIDEO">,
+): Promise<SceneMediaState> {
   try {
-    const imageAsset = (await getAssets(sceneId)).find((asset) => asset.asset_type === "IMAGE") ?? null;
-    if (!imageAsset) return emptyImageState();
-    const versions = await getAssetVersions(imageAsset.id);
+    const asset = (await getAssets(sceneId)).find((item) => item.asset_type === assetType) ?? null;
+    if (!asset) return emptyMediaState();
+    const versions = await getAssetVersions(asset.id);
     const selected = versions.find((version) => version.selected) ?? versions[versions.length - 1] ?? null;
-    return { asset: imageAsset, versions, previewVersionId: selected?.id ?? null, error: null };
+    return { asset, versions, previewVersionId: selected?.id ?? null, error: null };
   } catch (error) {
-    return { ...emptyImageState(), error: getIpcError(error).message };
+    return { ...emptyMediaState(), error: getIpcError(error).message };
   }
 }
 
 export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPageProps) {
   const [scenes, setScenes] = useState<Scene[]>([]);
-  const [imageStates, setImageStates] = useState<Record<SceneId, SceneImageState>>({});
-  const [activeScenes, setActiveScenes] = useState<Set<SceneId>>(new Set());
+  const [imageStates, setImageStates] = useState<Record<SceneId, SceneMediaState>>({});
+  const [videoStates, setVideoStates] = useState<Record<SceneId, SceneMediaState>>({});
+  const [activeImageScenes, setActiveImageScenes] = useState<Set<SceneId>>(new Set());
+  const [activeVideoScenes, setActiveVideoScenes] = useState<Set<SceneId>>(new Set());
+  const imageRequests = useRef<Set<SceneId>>(new Set());
+  const videoRequests = useRef<Set<SceneId>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -65,9 +75,16 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
       const loadedScenes = await getScenes(selectedProject.id);
       setScenes(loadedScenes);
       const entries = await Promise.all(
-        loadedScenes.map(async (scene) => [scene.id, await loadSceneImage(scene.id)] as const),
+        loadedScenes.map(async (scene) => {
+          const [image, video] = await Promise.all([
+            loadSceneMedia(scene.id, "IMAGE"),
+            loadSceneMedia(scene.id, "VIDEO"),
+          ]);
+          return [scene.id, image, video] as const;
+        }),
       );
-      setImageStates(Object.fromEntries(entries));
+      setImageStates(Object.fromEntries(entries.map(([sceneId, image]) => [sceneId, image])));
+      setVideoStates(Object.fromEntries(entries.map(([sceneId, , video]) => [sceneId, video])));
     } catch (error) {
       setLoadError(getIpcError(error).message);
     } finally {
@@ -78,12 +95,18 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
   useEffect(() => {
     setScenes([]);
     setImageStates({});
-    setActiveScenes(new Set());
+    setVideoStates({});
+    setActiveImageScenes(new Set());
+    setActiveVideoScenes(new Set());
     if (selectedProject) void loadStoryboard();
   }, [loadStoryboard, selectedProject]);
 
-  const setSceneActive = (sceneId: SceneId, active: boolean) => {
-    setActiveScenes((current) => {
+  const setSceneActive = (
+    setter: React.Dispatch<React.SetStateAction<Set<SceneId>>>,
+    sceneId: SceneId,
+    active: boolean,
+  ) => {
+    setter((current) => {
       const next = new Set(current);
       if (active) next.add(sceneId);
       else next.delete(sceneId);
@@ -91,90 +114,144 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
     });
   };
 
-  const updateImageState = (sceneId: SceneId, update: (current: SceneImageState) => SceneImageState) => {
-    setImageStates((current) => ({
+  const updateMediaState = (
+    setter: React.Dispatch<React.SetStateAction<Record<SceneId, SceneMediaState>>>,
+    sceneId: SceneId,
+    update: (current: SceneMediaState) => SceneMediaState,
+  ) => {
+    setter((current) => ({
       ...current,
-      [sceneId]: update(current[sceneId] ?? emptyImageState()),
+      [sceneId]: update(current[sceneId] ?? emptyMediaState()),
     }));
   };
 
-  const handleGenerate = async (scene: Scene) => {
-    if (activeScenes.has(scene.id) || !scene.visual_prompt.trim()) return;
-    setSceneActive(scene.id, true);
-    updateImageState(scene.id, (current) => ({ ...current, error: null }));
+  const handleGenerateImage = async (scene: Scene) => {
+    if (imageRequests.current.has(scene.id) || !scene.visual_prompt.trim()) return;
+    imageRequests.current.add(scene.id);
+    setSceneActive(setActiveImageScenes, scene.id, true);
+    updateMediaState(setImageStates, scene.id, (current) => ({ ...current, error: null }));
     try {
       const generated = await generateImage(scene.id, scene.visual_prompt);
-      updateImageState(scene.id, (current) => {
-        const asset = current.asset ?? {
+      updateMediaState(setImageStates, scene.id, (current) => ({
+        asset: current.asset ?? {
           id: generated.asset_id,
           scene_id: scene.id,
-          asset_type: "IMAGE" as const,
-        };
-        return {
-          asset,
-          versions: [...current.versions.filter((version) => version.id !== generated.id), generated]
-            .sort((left, right) => left.version - right.version),
-          previewVersionId: generated.id,
-          error: null,
-        };
-      });
-      const persisted = await loadSceneImage(scene.id);
-      updateImageState(scene.id, () => ({
+          asset_type: "IMAGE",
+        },
+        versions: [...current.versions.filter((version) => version.id !== generated.id), generated]
+          .sort((left, right) => left.version - right.version),
+        previewVersionId: generated.id,
+        error: null,
+      }));
+      const persisted = await loadSceneMedia(scene.id, "IMAGE");
+      updateMediaState(setImageStates, scene.id, () => ({
         ...persisted,
         previewVersionId: persisted.versions.some((version) => version.id === generated.id)
           ? generated.id
           : persisted.previewVersionId,
       }));
     } catch (error) {
-      updateImageState(scene.id, (current) => ({ ...current, error: getIpcError(error).message }));
+      updateMediaState(setImageStates, scene.id, (current) => ({
+        ...current,
+        error: getIpcError(error).message,
+      }));
     } finally {
-      setSceneActive(scene.id, false);
+      imageRequests.current.delete(scene.id);
+      setSceneActive(setActiveImageScenes, scene.id, false);
     }
   };
 
-  const handleSelectVersion = async (sceneId: SceneId, version: AssetVersion) => {
-    const imageState = imageStates[sceneId];
-    if (!imageState?.asset || activeScenes.has(sceneId) || version.selected) return;
-    setSceneActive(sceneId, true);
-    updateImageState(sceneId, (current) => ({ ...current, error: null }));
+  const handleGenerateVideo = async (scene: Scene, mode: VideoGenerationMode) => {
+    if (videoRequests.current.has(scene.id) || !scene.video_prompt.trim()) return;
+    videoRequests.current.add(scene.id);
+    setSceneActive(setActiveVideoScenes, scene.id, true);
+    updateMediaState(setVideoStates, scene.id, (current) => ({ ...current, error: null }));
     try {
-      await selectAssetVersion(imageState.asset.id, version.id);
-      updateImageState(sceneId, (current) => ({
-        ...current,
-        versions: current.versions.map((item) => ({ ...item, selected: item.id === version.id })),
-        previewVersionId: version.id,
+      const generated = await generateVideo(scene.id, scene.video_prompt, mode === "image");
+      updateMediaState(setVideoStates, scene.id, (current) => ({
+        asset: current.asset ?? {
+          id: generated.asset_id,
+          scene_id: scene.id,
+          asset_type: "VIDEO",
+        },
+        versions: [...current.versions.filter((version) => version.id !== generated.id), generated]
+          .sort((left, right) => left.version - right.version),
+        previewVersionId: generated.id,
+        error: null,
+      }));
+      const persisted = await loadSceneMedia(scene.id, "VIDEO");
+      updateMediaState(setVideoStates, scene.id, () => ({
+        ...persisted,
+        previewVersionId: persisted.versions.some((version) => version.id === generated.id)
+          ? generated.id
+          : persisted.previewVersionId,
       }));
     } catch (error) {
-      updateImageState(sceneId, (current) => ({ ...current, error: getIpcError(error).message }));
+      updateMediaState(setVideoStates, scene.id, (current) => ({
+        ...current,
+        error: getIpcError(error).message,
+      }));
     } finally {
-      setSceneActive(sceneId, false);
+      videoRequests.current.delete(scene.id);
+      setSceneActive(setActiveVideoScenes, scene.id, false);
+    }
+  };
+
+  const handleSelectVersion = async (
+    sceneId: SceneId,
+    version: AssetVersion,
+    mediaType: Extract<AssetType, "IMAGE" | "VIDEO">,
+  ) => {
+    const isImage = mediaType === "IMAGE";
+    const states = isImage ? imageStates : videoStates;
+    const activeScenes = isImage ? activeImageScenes : activeVideoScenes;
+    const stateSetter = isImage ? setImageStates : setVideoStates;
+    const activeSetter = isImage ? setActiveImageScenes : setActiveVideoScenes;
+    const mediaState = states[sceneId];
+    if (!mediaState?.asset || activeScenes.has(sceneId) || version.selected) return;
+
+    setSceneActive(activeSetter, sceneId, true);
+    updateMediaState(stateSetter, sceneId, (current) => ({ ...current, error: null }));
+    try {
+      await selectAssetVersion(mediaState.asset.id, version.id);
+      const persisted = await loadSceneMedia(sceneId, mediaType);
+      updateMediaState(stateSetter, sceneId, () => persisted);
+    } catch (error) {
+      updateMediaState(stateSetter, sceneId, (current) => ({
+        ...current,
+        error: getIpcError(error).message,
+      }));
+    } finally {
+      setSceneActive(activeSetter, sceneId, false);
     }
   };
 
   if (!selectedProject) {
     return (
       <div className="workspace-page">
-        <header className="workspace-header"><div className="workspace-heading"><span className="workspace-heading-icon" aria-hidden="true"><SectionIcon name="storyboard" /></span><div><p className="eyebrow">Phase 6 workspace</p><h1>Storyboard</h1><p className="lead">Review and generate visuals for every scene.</p></div></div></header>
+        <header className="workspace-header"><div className="workspace-heading"><span className="workspace-heading-icon" aria-hidden="true"><SectionIcon name="storyboard" /></span><div><p className="eyebrow">Phase 7 workspace</p><h1>Storyboard</h1><p className="lead">Review and generate visuals and video for every scene.</p></div></div></header>
         <div className="storyboard-empty"><span className="empty-icon" aria-hidden="true"><SectionIcon name="projects" /></span><h2>No project selected</h2><p>Choose an existing project before opening its storyboard.</p><Button onClick={() => onNavigate("/projects")}>Go to Projects</Button></div>
       </div>
     );
   }
 
+  const hasActiveGeneration = activeImageScenes.size > 0 || activeVideoScenes.size > 0;
+
   return (
     <div className="workspace-page storyboard-page">
       <header className="workspace-header">
-        <div className="workspace-heading"><span className="workspace-heading-icon" aria-hidden="true"><SectionIcon name="storyboard" /></span><div><p className="eyebrow">{selectedProject.name}</p><h1>Storyboard</h1><p className="lead">Generate scene images while preserving every saved version.</p></div></div>
+        <div className="workspace-heading"><span className="workspace-heading-icon" aria-hidden="true"><SectionIcon name="storyboard" /></span><div><p className="eyebrow">{selectedProject.name}</p><h1>Storyboard</h1><p className="lead">Generate scene images and videos while preserving every saved version.</p></div></div>
         <span className="project-count" aria-live="polite">{isLoading ? "Loading…" : `${scenes.length} ${scenes.length === 1 ? "scene" : "scenes"}`}</span>
       </header>
 
-      {isLoading ? <LoadingState title="Loading storyboard" description="Reading scenes and existing image versions from local storage." /> : null}
+      {isLoading ? <LoadingState title="Loading storyboard" description="Reading scenes and existing image and video versions from local storage." /> : null}
       {!isLoading && loadError ? <ErrorState title="Could not load storyboard" description={loadError} onRetry={() => void loadStoryboard()} /> : null}
       {!isLoading && !loadError && scenes.length === 0 ? <div className="storyboard-empty"><span className="empty-icon" aria-hidden="true"><SectionIcon name="scenes" /></span><h2>No scenes to storyboard</h2><p>Create scenes or generate a script first. The storyboard will follow their saved order.</p><Button onClick={() => onNavigate("/scenes")}>Open Scene Editor</Button></div> : null}
 
       {!isLoading && !loadError && scenes.length > 0 ? <>
-        <div className="storyboard-toolbar"><p>Scenes and stored image versions are displayed in production order.</p><div><Button variant="secondary" onClick={() => onNavigate("/scenes")}>Edit scenes</Button><Button variant="secondary" onClick={() => void loadStoryboard()} disabled={activeScenes.size > 0}>Refresh</Button></div></div>
+        <div className="storyboard-toolbar"><p>Scenes and stored media versions are displayed in production order.</p><div><Button variant="secondary" onClick={() => onNavigate("/scenes")}>Edit scenes</Button><Button variant="secondary" onClick={() => void loadStoryboard()} disabled={hasActiveGeneration}>Refresh</Button></div></div>
         <ol className="storyboard-grid" aria-label="Project storyboard scenes">
-          {scenes.map((scene, index) => <StoryboardCard key={scene.id} scene={scene} index={index} imageState={imageStates[scene.id] ?? emptyImageState()} isActive={activeScenes.has(scene.id)} onGenerate={handleGenerate} onSelectVersion={handleSelectVersion} />)}
+          {scenes.map((scene, index) => <StoryboardCard key={scene.id} scene={scene} index={index} imageState={imageStates[scene.id] ?? emptyMediaState()} videoState={videoStates[scene.id] ?? emptyMediaState()} isImageActive={activeImageScenes.has(scene.id)} isVideoActive={activeVideoScenes.has(scene.id)} onGenerateImage={handleGenerateImage} onGenerateVideo={handleGenerateVideo} onSelectVersion={handleSelectVersion} />)}
         </ol>
       </> : null}
     </div>
@@ -184,47 +261,129 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
 type StoryboardCardProps = {
   scene: Scene;
   index: number;
-  imageState: SceneImageState;
-  isActive: boolean;
-  onGenerate: (scene: Scene) => Promise<void>;
-  onSelectVersion: (sceneId: SceneId, version: AssetVersion) => Promise<void>;
+  imageState: SceneMediaState;
+  videoState: SceneMediaState;
+  isImageActive: boolean;
+  isVideoActive: boolean;
+  onGenerateImage: (scene: Scene) => Promise<void>;
+  onGenerateVideo: (scene: Scene, mode: VideoGenerationMode) => Promise<void>;
+  onSelectVersion: (
+    sceneId: SceneId,
+    version: AssetVersion,
+    mediaType: Extract<AssetType, "IMAGE" | "VIDEO">,
+  ) => Promise<void>;
 };
 
-function StoryboardCard({ scene, index, imageState, isActive, onGenerate, onSelectVersion }: StoryboardCardProps) {
-  const previewVersion = useMemo(
-    () => imageState.versions.find((version) => version.id === imageState.previewVersionId)
-      ?? imageState.versions.find((version) => version.selected)
-      ?? imageState.versions[imageState.versions.length - 1]
-      ?? null,
-    [imageState],
+function findPreviewVersion(state: SceneMediaState) {
+  return state.versions.find((version) => version.id === state.previewVersionId)
+    ?? state.versions.find((version) => version.selected)
+    ?? state.versions[state.versions.length - 1]
+    ?? null;
+}
+
+function StoryboardCard({
+  scene,
+  index,
+  imageState,
+  videoState,
+  isImageActive,
+  isVideoActive,
+  onGenerateImage,
+  onGenerateVideo,
+  onSelectVersion,
+}: StoryboardCardProps) {
+  const imagePreview = useMemo(() => findPreviewVersion(imageState), [imageState]);
+  const videoPreview = useMemo(() => findPreviewVersion(videoState), [videoState]);
+  const [videoPreviewFailed, setVideoPreviewFailed] = useState(false);
+  const hasImagePrompt = Boolean(scene.visual_prompt.trim());
+  const hasVideoPrompt = Boolean(scene.video_prompt.trim());
+  const hasSelectedImage = imageState.versions.some((version) => version.selected);
+  const [videoGenerationMode, setVideoGenerationMode] = useState<VideoGenerationMode>(
+    hasSelectedImage ? "image" : "text",
   );
-  const hasPrompt = Boolean(scene.visual_prompt.trim());
+  const videoStatus = isVideoActive
+    ? "RUNNING"
+    : videoState.error
+      ? "FAILED"
+      : videoState.versions.length
+        ? "COMPLETED"
+        : null;
+
+  useEffect(() => {
+    setVideoPreviewFailed(false);
+  }, [videoPreview?.id]);
+
+  useEffect(() => {
+    if (!hasSelectedImage && videoGenerationMode === "image") {
+      setVideoGenerationMode("text");
+    }
+  }, [hasSelectedImage, videoGenerationMode]);
 
   return (
     <li className="storyboard-card">
       <article aria-labelledby={`storyboard-scene-${scene.id}`}>
         <header className="storyboard-card-header"><div><p className="eyebrow">Scene {String(index + 1).padStart(2, "0")}</p><h2 id={`storyboard-scene-${scene.id}`}>{scene.title}</h2></div><span className={`scene-status scene-status-${scene.status.toLowerCase()}`}>{formatStatus(scene.status)}</span></header>
 
-        <div className={previewVersion ? "storyboard-image-frame" : "storyboard-visual-placeholder"} aria-busy={isActive}>
-          {previewVersion ? <img src={getAssetFileUrl(previewVersion.file_path)} alt={`Generated visual for ${scene.title}, version ${previewVersion.version}`} /> : <><span className="storyboard-placeholder-mark" aria-hidden="true"><SectionIcon name="storyboard" /></span><strong>No generated image</strong><span>{hasPrompt ? "Generate the first version from this scene's visual prompt" : "Add a Visual Prompt in the Scene Editor first"}</span></>}
-          {isActive ? <div className="storyboard-generation-overlay" role="status"><span className="spinner" aria-hidden="true" /><strong>Processing image…</strong><span>Waiting for the configured backend provider</span></div> : null}
-        </div>
+        <section className="storyboard-media-section" aria-labelledby={`image-heading-${scene.id}`}>
+          <h3 id={`image-heading-${scene.id}`} className="storyboard-media-heading">Image</h3>
+          <div className={imagePreview ? "storyboard-image-frame" : "storyboard-visual-placeholder"} aria-busy={isImageActive}>
+            {imagePreview ? <img src={getAssetFileUrl(imagePreview.file_path)} alt={`Generated visual for ${scene.title}, version ${imagePreview.version}`} /> : <><span className="storyboard-placeholder-mark" aria-hidden="true"><SectionIcon name="storyboard" /></span><strong>No generated image</strong><span>{hasImagePrompt ? "Generate the first version from this scene's visual prompt" : "Add a Visual Prompt in the Scene Editor first"}</span></>}
+            {isImageActive ? <div className="storyboard-generation-overlay" role="status"><span className="spinner" aria-hidden="true" /><strong>Processing image…</strong><span>Waiting for the configured backend provider</span></div> : null}
+          </div>
+          <div className="storyboard-image-controls">
+            <div><span className="storyboard-control-label">Image</span><strong>{imagePreview ? `Version ${imagePreview.version}` : "Not generated"}</strong></div>
+            <Button onClick={() => void onGenerateImage(scene)} disabled={isImageActive || !hasImagePrompt}>{isImageActive ? "Generating…" : imageState.versions.length ? "Generate new version" : "Generate image"}</Button>
+          </div>
+          {!hasImagePrompt ? <p className="storyboard-image-warning">A Visual Prompt is required before image generation.</p> : null}
+          {imageState.error ? <p className="storyboard-image-error" role="alert">{imageState.error}</p> : null}
+          <VersionList scene={scene} mediaType="IMAGE" state={imageState} isActive={isImageActive} onSelectVersion={onSelectVersion} />
+        </section>
 
-        <div className="storyboard-image-controls">
-          <div><span className="storyboard-control-label">Image</span><strong>{previewVersion ? `Version ${previewVersion.version}` : "Not generated"}</strong></div>
-          <Button onClick={() => void onGenerate(scene)} disabled={isActive || !hasPrompt}>{isActive ? "Generating…" : imageState.versions.length ? "Generate new version" : "Generate image"}</Button>
-        </div>
-        {!hasPrompt ? <p className="storyboard-image-warning">A Visual Prompt is required before image generation.</p> : null}
-        {imageState.error ? <p className="storyboard-image-error" role="alert">{imageState.error}</p> : null}
-
-        {imageState.versions.length > 0 ? <div className="asset-version-list" aria-label={`Image versions for ${scene.title}`}>
-          {imageState.versions.map((version) => <button key={version.id} type="button" className={version.selected ? "asset-version-button selected" : "asset-version-button"} onClick={() => void onSelectVersion(scene.id, version)} disabled={isActive || version.selected} aria-label={`${version.selected ? "Selected" : "Select"} image version ${version.version}`}><span>v{version.version}</span>{version.selected ? <small>Selected</small> : <small>{version.id === imageState.previewVersionId ? "Preview" : "Select"}</small>}</button>)}
-        </div> : null}
+        <section className="storyboard-media-section storyboard-video-section" aria-labelledby={`video-heading-${scene.id}`}>
+          <div className="storyboard-media-heading-row"><h3 id={`video-heading-${scene.id}`} className="storyboard-media-heading">Video</h3>{videoStatus ? <span className={`video-status-badge video-status-${videoStatus.toLowerCase()}`} aria-live="polite">{videoStatus === "RUNNING" ? "Generating video…" : videoStatus.charAt(0) + videoStatus.slice(1).toLowerCase()}</span> : null}</div>
+          <div className={videoPreview && !videoPreviewFailed ? "storyboard-video-frame" : "storyboard-video-placeholder"} aria-busy={isVideoActive}>
+            {videoPreview && !videoPreviewFailed ? <video key={videoPreview.id} src={getAssetFileUrl(videoPreview.file_path)} controls preload="metadata" onError={() => setVideoPreviewFailed(true)}>Generated video for {scene.title}</video> : <><span className="storyboard-placeholder-mark" aria-hidden="true"><SectionIcon name="storyboard" /></span><strong>{videoPreviewFailed ? "Video preview unavailable" : "No generated video"}</strong><span>{videoPreviewFailed ? "The stored local video could not be loaded." : hasVideoPrompt ? "Generate the first video from this scene's video prompt" : "Add a Video Prompt in the Scene Editor first"}</span></>}
+            {isVideoActive ? <div className="storyboard-generation-overlay" role="status"><span className="spinner" aria-hidden="true" /><strong>Generating video…</strong><span>This may take several minutes. Other scenes remain available.</span></div> : null}
+          </div>
+          <div className="storyboard-image-controls">
+            <div><span className="storyboard-control-label">Video</span><strong>{videoPreview ? `Version ${videoPreview.version}` : "Not generated"}</strong><small>{videoGenerationMode === "image" ? "Using selected image" : "Using video prompt only"}</small></div>
+            <div className="video-generation-actions">
+              <fieldset className="video-mode-selector" disabled={isVideoActive}>
+                <legend>Generation mode</legend>
+                <label><input type="radio" name={`video-mode-${scene.id}`} value="image" checked={videoGenerationMode === "image"} onChange={() => setVideoGenerationMode("image")} disabled={!hasSelectedImage} />Image to video</label>
+                <label><input type="radio" name={`video-mode-${scene.id}`} value="text" checked={videoGenerationMode === "text"} onChange={() => setVideoGenerationMode("text")} />Text to video</label>
+              </fieldset>
+              <Button onClick={() => void onGenerateVideo(scene, videoGenerationMode)} disabled={isVideoActive || !hasVideoPrompt}>{isVideoActive ? "Generating…" : videoState.versions.length ? "Regenerate video" : "Generate video"}</Button>
+            </div>
+          </div>
+          {!hasVideoPrompt ? <p className="storyboard-image-warning">A Video Prompt is required before video generation.</p> : null}
+          {videoPreviewFailed ? <p className="storyboard-image-error" role="alert">The selected video file could not be previewed. Try another stored version.</p> : null}
+          {videoState.error ? <p className="storyboard-image-error" role="alert">{videoState.error}</p> : null}
+          <VersionList scene={scene} mediaType="VIDEO" state={videoState} isActive={isVideoActive} onSelectVersion={onSelectVersion} />
+        </section>
 
         <div className="storyboard-narration"><span>Narration</span><p>{scene.narration || "No narration has been added."}</p></div>
         <dl className="storyboard-prompts"><div><dt>Visual prompt</dt><dd>{scene.visual_prompt || "Not set"}</dd></div><div><dt>Video prompt</dt><dd>{scene.video_prompt || "Not set"}</dd></div></dl>
         <footer className="storyboard-card-footer"><span>Duration</span><strong>{scene.duration} sec</strong></footer>
       </article>
     </li>
+  );
+}
+
+type VersionListProps = {
+  scene: Scene;
+  mediaType: Extract<AssetType, "IMAGE" | "VIDEO">;
+  state: SceneMediaState;
+  isActive: boolean;
+  onSelectVersion: StoryboardCardProps["onSelectVersion"];
+};
+
+function VersionList({ scene, mediaType, state, isActive, onSelectVersion }: VersionListProps) {
+  if (!state.versions.length) return null;
+  const label = mediaType === "IMAGE" ? "Image" : "Video";
+  return (
+    <div className="asset-version-list" aria-label={`${label} versions for ${scene.title}`}>
+      {state.versions.map((version) => <button key={version.id} type="button" className={version.selected ? "asset-version-button selected" : "asset-version-button"} onClick={() => void onSelectVersion(scene.id, version, mediaType)} disabled={isActive || version.selected} aria-label={`${version.selected ? "Selected" : "Select"} ${label.toLowerCase()} version ${version.version}`}><span>v{version.version}</span>{version.selected ? <small>Selected</small> : <small>{version.id === state.previewVersionId ? "Preview" : "Select"}</small>}</button>)}
+    </div>
   );
 }
