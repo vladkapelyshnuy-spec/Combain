@@ -15,8 +15,8 @@ export function listClips(timelineId: TimelineId): Promise<TimelineClip[]> {
   return invoke<TimelineClip[]>("list_clips", { timelineId });
 }
 
-export function addClip(timelineId: TimelineId, assetVersionId: AssetVersionId, track: TimelineTrack, startTime: number, duration: number): Promise<TimelineClip> {
-  return invoke<TimelineClip>("add_clip", { timelineId, assetVersionId, track, startTime, duration });
+export function addClip(timelineId: TimelineId, assetVersionId: AssetVersionId, track: TimelineTrack, startTime: number, duration: number, sourceOffset = 0): Promise<TimelineClip> {
+  return invoke<TimelineClip>("add_clip", { timelineId, assetVersionId, track, startTime, duration, sourceOffset });
 }
 
 export function updateClip(clipId: TimelineClipId, startTime: number, duration: number): Promise<TimelineClip> {

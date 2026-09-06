@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SectionIcon } from "../components/SectionIcon";
+import { TimelinePreview } from "../components/TimelinePreview";
 import { Button, ErrorState, LoadingState } from "../components/ui";
 import type { Asset, AssetVersion } from "../models/asset";
 import type { Project } from "../models/project";
@@ -13,7 +14,6 @@ import { addClip, createTimeline, deleteClip, getTimeline, listClips, moveClip, 
 
 type TimelinePageProps = { selectedProject: Project | null; onNavigate: (path: AppPath) => void };
 type TimelineAsset = { asset: Asset; scene: Scene; versions: AssetVersion[]; selectedVersion: AssetVersion | null };
-type TimingDraft = { startSeconds: string; durationSeconds: string; splitSeconds: string };
 type TimelineCandidate = { item: TimelineAsset; track: TimelineTrack; startTime: number; duration: number };
 type TimelineInteraction = {
   kind: "move" | "trim-left" | "trim-right";
@@ -23,8 +23,12 @@ type TimelineInteraction = {
   originalDuration: number;
   previewStart: number;
   previewDuration: number;
+  groupStarts: Record<string, number>;
+  delta: number;
+  additiveSelection: boolean;
 };
-type TimelineClipboard = Pick<TimelineClip, "asset_version_id" | "track" | "duration">;
+type TimelineClipboardItem = Pick<TimelineClip, "asset_version_id" | "track" | "start_time" | "duration" | "source_offset">;
+type TimelineHistoryEntry = { label: string; undo: () => Promise<void> };
 type TimelineContextMenu = { clipId: string; x: number; y: number };
 type MediaFilter = "ALL" | "VIDEO" | "AUDIO" | "IMAGE";
 type TimelineDropTarget = { track: TimelineTrack; startTime: number; duration: number; valid: boolean };
@@ -34,20 +38,16 @@ const MIN_TIMELINE_SECONDS = 10;
 const MIN_CLIP_DURATION_MS = 100;
 const SNAP_THRESHOLD_PX = 9;
 
-function secondsToMs(value: string) {
-  return Math.round(Number(value) * 1000);
-}
-
 function formatSeconds(milliseconds: number) {
   const seconds = milliseconds / 1000;
   return Number.isInteger(seconds) ? `${seconds}` : seconds.toFixed(1);
 }
 
 function formatTimestamp(milliseconds: number) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const totalSeconds = Math.max(0, milliseconds / 1000);
   const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  const seconds = (totalSeconds % 60).toFixed(1).padStart(4, "0");
+  return `${String(minutes).padStart(2, "0")}:${seconds}`;
 }
 
 function isEditableTarget(target: EventTarget | null) {
@@ -129,15 +129,15 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [assets, setAssets] = useState<TimelineAsset[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<TimelineAsset[]>([]);
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const [timingDraft, setTimingDraft] = useState<TimingDraft>({ startSeconds: "0", durationSeconds: "1", splitSeconds: "0.5" });
+  const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(() => new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [playheadTime, setPlayheadTime] = useState(0);
   const [pixelsPerSecond, setPixelsPerSecond] = useState(DEFAULT_PIXELS_PER_SECOND);
   const [interaction, setInteraction] = useState<TimelineInteraction | null>(null);
-  const [clipboard, setClipboard] = useState<TimelineClipboard | null>(null);
+  const [clipboard, setClipboard] = useState<TimelineClipboardItem[]>([]);
+  const [history, setHistory] = useState<TimelineHistoryEntry[]>([]);
   const [contextMenu, setContextMenu] = useState<TimelineContextMenu | null>(null);
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const [isMediaPanelOpen, setIsMediaPanelOpen] = useState(true);
@@ -146,7 +146,8 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
   const [draggedAssetId, setDraggedAssetId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<TimelineDropTarget | null>(null);
   const interactionRef = useRef<TimelineInteraction | null>(null);
-  const mediaRef = useRef<HTMLMediaElement | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const isPlayheadDraggingRef = useRef(false);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const autoPopulationPromises = useRef(new Map<string, Promise<TimelineClip[]>>());
 
@@ -191,7 +192,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
       setScenes(scenes);
       setAssets(loadedAssets);
       setLibraryAssets(loadedLibraryAssets);
-      setSelectedClipId((current) => effectiveClips.some((clip) => clip.id === current) ? current : null);
+      setSelectedClipIds((current) => new Set([...current].filter((id) => effectiveClips.some((clip) => clip.id === id))));
     } catch (loadError) {
       setError(getIpcError(loadError).message);
     } finally {
@@ -205,9 +206,10 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     setScenes([]);
     setAssets([]);
     setLibraryAssets([]);
-    setSelectedClipId(null);
+    setSelectedClipIds(new Set());
     setPlayheadTime(0);
-    setClipboard(null);
+    setClipboard([]);
+    setHistory([]);
     setContextMenu(null);
     setIsPreviewPlaying(false);
     setDraggedAssetId(null);
@@ -217,27 +219,20 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     if (selectedProject) void loadTimeline();
   }, [loadTimeline, selectedProject]);
 
-  const selectedClip = clips.find((clip) => clip.id === selectedClipId) ?? null;
+  const selectedClips = clips.filter((clip) => selectedClipIds.has(clip.id));
+  const selectedClip = selectedClips.length === 1 ? selectedClips[0] : null;
   const versionMedia = useMemo(() => new Map(libraryAssets.flatMap((item) => item.versions.map((version) => [version.id, { ...item, selectedVersion: version }] as const))), [libraryAssets]);
   const versionAssetIds = useMemo(() => new Map([...versionMedia].map(([versionId, media]) => [versionId, media.asset.id])), [versionMedia]);
-  const selectedAsset = selectedClip ? versionMedia.get(selectedClip.asset_version_id) ?? null : null;
+  const previewMediaByVersion = useMemo(() => new Map([...versionMedia].map(([id, media]) => [id, { version: media.selectedVersion!, sceneTitle: media.scene.title }])), [versionMedia]);
   const contextClip = contextMenu ? clips.find((clip) => clip.id === contextMenu.clipId) ?? null : null;
 
-  useEffect(() => {
-    setIsPreviewPlaying(false);
-    if (!selectedClip) return;
-    setTimingDraft({
-      startSeconds: formatSeconds(selectedClip.start_time),
-      durationSeconds: formatSeconds(selectedClip.duration),
-      splitSeconds: formatSeconds(selectedClip.duration / 2),
-    });
-  }, [selectedClip]);
-
-  const previewClips = useMemo(() => clips.map((clip) => interaction?.clipId === clip.id ? {
-    ...clip,
-    start_time: interaction.previewStart,
-    duration: interaction.previewDuration,
-  } : clip), [clips, interaction]);
+  const previewClips = useMemo(() => clips.map((clip) => {
+    if (!interaction) return clip;
+    if (interaction.kind === "move" && clip.id in interaction.groupStarts) {
+      return { ...clip, start_time: interaction.groupStarts[clip.id] + interaction.delta };
+    }
+    return interaction.clipId === clip.id ? { ...clip, start_time: interaction.previewStart, duration: interaction.previewDuration } : clip;
+  }), [clips, interaction]);
   const projectDuration = scenes.reduce((total, scene) => total + Math.max(0, scene.duration), 0);
   const timelineContentDuration = Math.max(projectDuration * 1000, Math.max(0, ...previewClips.map((clip) => clip.start_time + clip.duration)));
   const timelineSeconds = Math.max(MIN_TIMELINE_SECONDS, Math.ceil(timelineContentDuration / 1000) + 2);
@@ -294,7 +289,8 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     void runAction("drop-media", async () => {
       const created = await addClip(timeline.id, assetVersionId, track, placement.startTime, placement.duration);
       await refreshClips(timeline.id);
-      setSelectedClipId(created.id);
+      setSelectedClipIds(new Set([created.id]));
+      pushHistory({ label: "Add media", undo: async () => { await deleteClip(created.id); } });
     });
   };
 
@@ -306,6 +302,9 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     if (activeAction || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+    const movingSelection = selectedClipIds.has(clip.id) ? selectedClips : [clip];
+    if (!selectedClipIds.has(clip.id) || additive) selectClip(clip.id, additive, !event.shiftKey);
     const nextInteraction: TimelineInteraction = {
       kind,
       clipId: clip.id,
@@ -314,8 +313,10 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
       originalDuration: clip.duration,
       previewStart: clip.start_time,
       previewDuration: clip.duration,
+      groupStarts: Object.fromEntries(movingSelection.map((item) => [item.id, item.start_time])),
+      delta: 0,
+      additiveSelection: additive,
     };
-    setSelectedClipId(clip.id);
     interactionRef.current = nextInteraction;
     setInteraction(nextInteraction);
   };
@@ -330,9 +331,9 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
       if (!clip) return;
       const delta = Math.round((event.clientX - current.originClientX) / pixelsPerSecond * 1000);
       const threshold = SNAP_THRESHOLD_PX / pixelsPerSecond * 1000;
-      const boundaries = clips
+      const boundaries = [playheadTime, ...clips
         .filter((item) => item.id !== current.clipId && item.track === clip.track)
-        .flatMap((item) => [item.start_time, item.start_time + item.duration]);
+        .flatMap((item) => [item.start_time, item.start_time + item.duration])];
       let previewStart = current.originalStart;
       let previewDuration = current.originalDuration;
 
@@ -353,7 +354,11 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
         previewDuration = originalEnd - previewStart;
       }
 
-      const nextInteraction = { ...current, previewStart, previewDuration };
+      const groupMinimumStart = Math.min(...Object.values(current.groupStarts));
+      const appliedDelta = current.kind === "move"
+        ? Math.max(-groupMinimumStart, previewStart - current.originalStart)
+        : 0;
+      const nextInteraction = { ...current, previewStart, previewDuration, delta: appliedDelta };
       interactionRef.current = nextInteraction;
       setInteraction(nextInteraction);
     };
@@ -363,20 +368,48 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
       interactionRef.current = null;
       setInteraction(null);
       if (!completed || !timeline) return;
-      if (completed.previewStart === completed.originalStart && completed.previewDuration === completed.originalDuration) return;
-      setClips((currentClips) => currentClips.map((clip) => clip.id === completed.clipId ? {
-        ...clip,
-        start_time: completed.previewStart,
-        duration: completed.previewDuration,
-      } : clip));
+      if (completed.delta === 0 && completed.previewStart === completed.originalStart && completed.previewDuration === completed.originalDuration) {
+        if (!completed.additiveSelection) setSelectedClipIds(new Set([completed.clipId]));
+        return;
+      }
+      setClips((currentClips) => currentClips.map((clip) => {
+        if (completed.kind === "move" && clip.id in completed.groupStarts) {
+          return { ...clip, start_time: completed.groupStarts[clip.id] + completed.delta };
+        }
+        return clip.id === completed.clipId
+          ? { ...clip, start_time: completed.previewStart, duration: completed.previewDuration }
+          : clip;
+      }));
       void runAction(`timeline-${completed.kind}`, async () => {
         try {
           if (completed.kind === "move") {
-            await moveClip(completed.clipId, completed.previewStart);
+            const entries = Object.entries(completed.groupStarts).sort((left, right) => completed.delta >= 0
+              ? right[1] - left[1]
+              : left[1] - right[1]);
+            const movedIds: string[] = [];
+            try {
+              for (const [clipId, originalStart] of entries) {
+                await moveClip(clipId, originalStart + completed.delta);
+                movedIds.push(clipId);
+              }
+            } catch (moveError) {
+              for (const clipId of movedIds.reverse()) {
+                await moveClip(clipId, completed.groupStarts[clipId]);
+              }
+              throw moveError;
+            }
+            pushHistory({
+              label: entries.length > 1 ? "Move clips" : "Move clip",
+              undo: async () => {
+                for (const [clipId, originalStart] of [...entries].reverse()) await moveClip(clipId, originalStart);
+              },
+            });
           } else if (completed.kind === "trim-right") {
             await trimClip(completed.clipId, completed.previewDuration);
+            pushHistory({ label: "Trim clip", undo: async () => { await trimClip(completed.clipId, completed.originalDuration); } });
           } else {
             await updateClip(completed.clipId, completed.previewStart, completed.previewDuration);
+            pushHistory({ label: "Trim clip", undo: async () => { await updateClip(completed.clipId, completed.originalStart, completed.originalDuration); } });
           }
         } finally {
           await refreshClips(timeline.id);
@@ -392,49 +425,47 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [clips, interaction, pixelsPerSecond, timeline]);
+  }, [clips, interaction, pixelsPerSecond, playheadTime, timeline]);
 
   const setPlayheadFromPointer = (event: React.PointerEvent<HTMLElement>, labelOffset = 0) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 && !isPlayheadDraggingRef.current) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const nextTime = Math.max(0, Math.min(timelineContentDuration, Math.round((event.clientX - bounds.left - labelOffset) / pixelsPerSecond * 1000)));
     setPlayheadTime(nextTime);
-    if (mediaRef.current && selectedClip && nextTime >= selectedClip.start_time && nextTime <= selectedClip.start_time + selectedClip.duration) {
-      mediaRef.current.currentTime = (nextTime - selectedClip.start_time) / 1000;
-    }
+    isPlayheadDraggingRef.current = true;
   };
+
+  const pushHistory = (entry: TimelineHistoryEntry) => {
+    setHistory((current) => [...current.slice(-29), entry]);
+  };
+
+  const selectClip = (clipId: string, additive: boolean, toggle = true) => {
+    setSelectedClipIds((current) => {
+      if (!additive) return new Set([clipId]);
+      const next = new Set(current);
+      if (toggle && next.has(clipId)) next.delete(clipId);
+      else next.add(clipId);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const stopDragging = () => { isPlayheadDraggingRef.current = false; };
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return () => {
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+  }, []);
 
   const handleAddMissing = () => {
     if (!timeline || missingCandidates.length === 0) return;
     void runAction("add-missing", async () => {
-      await addMissingClips(timeline.id, clips, missingCandidates, versionAssetIds);
+      const updated = await addMissingClips(timeline.id, clips, missingCandidates, versionAssetIds);
+      const created = updated.filter((clip) => !clips.some((existing) => existing.id === clip.id));
       await refreshClips(timeline.id);
-    });
-  };
-
-  const handleSaveTiming = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!timeline || !selectedClip) return;
-    const startTime = secondsToMs(timingDraft.startSeconds);
-    const duration = secondsToMs(timingDraft.durationSeconds);
-    if (!Number.isFinite(startTime) || !Number.isFinite(duration) || startTime < 0 || duration <= 0) {
-      setError("Start time must be zero or greater and duration must be greater than zero.");
-      return;
-    }
-    void runAction("update", async () => { await updateClip(selectedClip.id, startTime, duration); await refreshClips(timeline.id); });
-  };
-
-  const handleSplit = () => {
-    if (!timeline || !selectedClip) return;
-    const splitTime = secondsToMs(timingDraft.splitSeconds);
-    if (!Number.isFinite(splitTime) || splitTime <= 0 || splitTime >= selectedClip.duration) {
-      setError("Split time must be greater than zero and shorter than the clip duration.");
-      return;
-    }
-    void runAction("split", async () => {
-      const [, second] = await splitClip(selectedClip.id, splitTime);
-      await refreshClips(timeline.id);
-      setSelectedClipId(second.id);
+      if (created.length) pushHistory({ label: "Add missing media", undo: async () => { for (const clip of created) await deleteClip(clip.id); } });
     });
   };
 
@@ -442,85 +473,109 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     if (!timeline || playheadTime <= clip.start_time || playheadTime >= clip.start_time + clip.duration) return;
     const relativeSplitTime = playheadTime - clip.start_time;
     void runAction("split-playhead", async () => {
-      const [, second] = await splitClip(clip.id, relativeSplitTime);
+      const [first, second] = await splitClip(clip.id, relativeSplitTime);
       await refreshClips(timeline.id);
-      setSelectedClipId(second.id);
+      setSelectedClipIds(new Set([second.id]));
+      pushHistory({
+        label: "Split clip",
+        undo: async () => {
+          await deleteClip(second.id);
+          await updateClip(first.id, clip.start_time, clip.duration);
+        },
+      });
     });
   };
 
-  const handleSplitAtPlayhead = () => {
-    if (!selectedClip) return;
-    splitAtPlayhead(selectedClip);
+  const copySelectedClips = () => {
+    setClipboard(selectedClips.map(({ asset_version_id, track, start_time, duration, source_offset }) => ({ asset_version_id, track, start_time, duration, source_offset })));
   };
 
-  const deleteTimelineClip = (clip: TimelineClip) => {
-    if (!timeline) return;
-    void runAction("delete", async () => { await deleteClip(clip.id); await refreshClips(timeline.id); setSelectedClipId((current) => current === clip.id ? null : current); });
-  };
-
-  const handleDelete = () => {
-    if (selectedClip) deleteTimelineClip(selectedClip);
-  };
-
-  const copyTimelineClip = (clip: TimelineClip) => {
-    setClipboard({ asset_version_id: clip.asset_version_id, track: clip.track, duration: clip.duration });
-  };
-
-  const duplicateTimelineClip = (clip: TimelineClip) => {
-    if (!timeline) return;
-    void runAction("duplicate", async () => {
-      const created = await addClip(timeline.id, clip.asset_version_id, clip.track, clip.start_time + clip.duration, clip.duration);
+  const addClipGroup = (items: TimelineClipboardItem[], baseStart: number, label: string) => {
+    if (!timeline || items.length === 0) return;
+    const minimumStart = Math.min(...items.map((clip) => clip.start_time));
+    void runAction(label.toLowerCase(), async () => {
+      const created: TimelineClip[] = [];
+      try {
+        for (const clip of items) created.push(await addClip(timeline.id, clip.asset_version_id, clip.track, Math.max(0, baseStart + clip.start_time - minimumStart), clip.duration, clip.source_offset));
+      } catch (createError) {
+        for (const clip of created.reverse()) await deleteClip(clip.id);
+        throw createError;
+      }
       await refreshClips(timeline.id);
-      setSelectedClipId(created.id);
+      setSelectedClipIds(new Set(created.map((clip) => clip.id)));
+      pushHistory({ label, undo: async () => { for (const clip of created) await deleteClip(clip.id); } });
     });
   };
 
-  const pasteTimelineClip = () => {
-    if (!timeline || !clipboard) return;
-    const fallbackStart = selectedClip ? selectedClip.start_time + selectedClip.duration : 0;
-    const startTime = playheadTime > 0 ? playheadTime : fallbackStart;
-    void runAction("paste", async () => {
-      const created = await addClip(timeline.id, clipboard.asset_version_id, clipboard.track, startTime, clipboard.duration);
+  const duplicateSelectedClips = () => {
+    const end = Math.max(0, ...clips.map((clip) => clip.start_time + clip.duration));
+    const items = selectedClips.map(({ asset_version_id, track, start_time, duration, source_offset }) => ({ asset_version_id, track, start_time, duration, source_offset }));
+    addClipGroup(items, end + 250, "Duplicate clips");
+  };
+
+  const deleteSelectedClips = () => {
+    if (!timeline || selectedClips.length === 0) return;
+    const deleted = [...selectedClips];
+    void runAction("delete", async () => {
+      const removed: TimelineClip[] = [];
+      try {
+        for (const clip of deleted) {
+          await deleteClip(clip.id);
+          removed.push(clip);
+        }
+      } catch (deleteError) {
+        for (const clip of removed) await addClip(timeline.id, clip.asset_version_id, clip.track, clip.start_time, clip.duration, clip.source_offset);
+        throw deleteError;
+      }
       await refreshClips(timeline.id);
-      setSelectedClipId(created.id);
+      setSelectedClipIds(new Set());
+      pushHistory({ label: "Delete clips", undo: async () => { for (const clip of deleted) await addClip(timeline.id, clip.asset_version_id, clip.track, clip.start_time, clip.duration, clip.source_offset); } });
+    });
+  };
+
+  const undoLastAction = () => {
+    if (!timeline || history.length === 0) return;
+    const entry = history[history.length - 1];
+    void runAction("undo", async () => {
+      await entry.undo();
+      await refreshClips(timeline.id);
+      setSelectedClipIds(new Set());
+      setHistory((current) => current.slice(0, -1));
     });
   };
 
   const seekPlayhead = (nextTime: number) => {
     const clampedTime = Math.max(0, Math.min(timelineContentDuration, nextTime));
     setPlayheadTime(clampedTime);
-    if (mediaRef.current && selectedClip && clampedTime >= selectedClip.start_time && clampedTime <= selectedClip.start_time + selectedClip.duration) {
-      mediaRef.current.currentTime = (clampedTime - selectedClip.start_time) / 1000;
-    }
   };
 
   const togglePreviewPlayback = () => {
-    const media = mediaRef.current;
-    if (!media) return;
-    if (media.paused) {
-      void media.play().catch((playError: unknown) => setError(getIpcError(playError).message));
-    } else {
-      media.pause();
-    }
+    if (timelineContentDuration <= 0) return;
+    if (!isPreviewPlaying && playheadTime >= timelineContentDuration) setPlayheadTime(0);
+    setIsPreviewPlaying((value) => !value);
   };
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target) || activeAction || interaction) return;
+      if (!editorRef.current?.contains(document.activeElement) || isEditableTarget(event.target) || activeAction || interaction) return;
       const key = event.key.toLowerCase();
-      if ((event.key === "Delete" || event.key === "Backspace") && selectedClip) {
+      const modifier = event.ctrlKey || event.metaKey;
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedClips.length) {
         event.preventDefault();
-        deleteTimelineClip(selectedClip);
-      } else if (event.ctrlKey && key === "c" && selectedClip) {
+        deleteSelectedClips();
+      } else if (modifier && key === "c" && selectedClips.length) {
         event.preventDefault();
-        copyTimelineClip(selectedClip);
-      } else if (event.ctrlKey && key === "v" && clipboard) {
+        copySelectedClips();
+      } else if (modifier && key === "v" && clipboard.length) {
         event.preventDefault();
-        pasteTimelineClip();
-      } else if (event.ctrlKey && key === "d" && selectedClip) {
+        addClipGroup(clipboard, playheadTime, "Paste clips");
+      } else if (modifier && key === "d" && selectedClips.length) {
         event.preventDefault();
-        duplicateTimelineClip(selectedClip);
-      } else if (event.ctrlKey && key === "b" && selectedClip && playheadInsideSelectedClip) {
+        duplicateSelectedClips();
+      } else if (modifier && key === "z" && history.length) {
+        event.preventDefault();
+        undoLastAction();
+      } else if (modifier && key === "b" && selectedClip && playheadInsideSelectedClip) {
         event.preventDefault();
         splitAtPlayhead(selectedClip);
       } else if (event.key === "Escape") {
@@ -529,7 +584,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeAction, clipboard, interaction, playheadInsideSelectedClip, playheadTime, selectedClip, timeline]);
+  }, [activeAction, clipboard, history, interaction, playheadInsideSelectedClip, playheadTime, selectedClip, selectedClips, timeline]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -551,11 +606,20 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
   if (!timeline && error) return <div className="workspace-page"><ErrorState title="Could not load timeline" description={error} onRetry={() => void loadTimeline()} /></div>;
 
   return (
-    <div className="workspace-page timeline-page">
+    <div
+      className="workspace-page timeline-page"
+      ref={editorRef}
+      tabIndex={-1}
+      onPointerDown={(event) => {
+        if (!isEditableTarget(event.target) && !(event.target instanceof HTMLButtonElement)) {
+          editorRef.current?.focus({ preventScroll: true });
+        }
+      }}
+    >
       <header className="workspace-header"><div className="workspace-heading"><span className="workspace-heading-icon" aria-hidden="true"><SectionIcon name="timeline" /></span><div><p className="eyebrow">{selectedProject.name}</p><h1>Timeline</h1><p className="lead">Place and edit selected video and audio assets using precise timing.</p></div></div><div className="timeline-header-actions"><span className="project-count">{clips.length} {clips.length === 1 ? "clip" : "clips"}</span><Button variant="secondary" onClick={handleAddMissing} disabled={Boolean(activeAction) || missingCandidates.length === 0}>{activeAction === "add-missing" ? "Adding media…" : missingCandidates.length ? `Add missing media (${missingCandidates.length})` : "All media added"}</Button></div></header>
       {error ? <p className="timeline-error" role="alert">{error}</p> : null}
 
-      <div className={`${isMediaPanelOpen ? "timeline-desktop-layout" : "timeline-desktop-layout media-collapsed"}${selectedClip ? " properties-open" : ""}`}>
+      <div className={isMediaPanelOpen ? "timeline-desktop-layout" : "timeline-desktop-layout media-collapsed"}>
       <aside className="timeline-library" aria-label="Project media">
         {isMediaPanelOpen ? <>
           <header><div><p className="eyebrow">Project media</p><h2>Media</h2></div><button type="button" aria-label="Collapse Media panel" onClick={() => setIsMediaPanelOpen(false)}>‹</button></header>
@@ -581,7 +645,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
                 <div className={`timeline-library-thumb ${item.asset.asset_type.toLowerCase()}`}>
                   {item.selectedVersion && item.asset.asset_type === "IMAGE" ? <img src={getAssetFileUrl(item.selectedVersion.file_path)} alt="" /> : item.selectedVersion && item.asset.asset_type === "VIDEO" ? <video muted preload="metadata" src={getAssetFileUrl(item.selectedVersion.file_path)} /> : <span aria-hidden="true">{item.asset.asset_type === "AUDIO" ? "♫" : "◇"}</span>}
                 </div>
-                <div><strong>{item.scene.title}</strong><span>{item.asset.asset_type} · {item.selectedVersion ? `v${item.selectedVersion.version}` : "no selected version"}</span></div>
+                <div><strong>Scene {item.scene.order} · {item.scene.title}</strong><span>{item.asset.asset_type} · {item.selectedVersion ? `v${item.selectedVersion.version} · ${item.selectedVersion.model} · ${formatSeconds(item.scene.duration * 1000)}s` : "no selected version"}</span></div>
               </article>;
             }) : <div className="timeline-library-empty"><strong>No media found</strong><span>Generate media in Storyboard or change the filter.</span></div>}
           </div>
@@ -590,42 +654,22 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
       </aside>
 
       <main className="timeline-center-workspace">
-      <section className="timeline-preview-panel" aria-label="Selected clip preview">
-        <div className="timeline-preview-stage">
-          {selectedAsset?.selectedVersion && selectedClip ? selectedClip.track === "VIDEO" ? (
-            <video
-              key={selectedAsset.selectedVersion.id}
-              ref={(element) => { mediaRef.current = element; }}
-              preload="metadata"
-              src={getAssetFileUrl(selectedAsset.selectedVersion.file_path)}
-              onPlay={() => setIsPreviewPlaying(true)}
-              onPause={() => setIsPreviewPlaying(false)}
-              onEnded={() => setIsPreviewPlaying(false)}
-              onTimeUpdate={(event) => setPlayheadTime(Math.min(selectedClip.start_time + selectedClip.duration, selectedClip.start_time + event.currentTarget.currentTime * 1000))}
-            >Video preview unavailable.</video>
-          ) : (
-            <div className="timeline-audio-stage">
-              <span aria-hidden="true">♫</span>
-              <strong>{selectedAsset.scene.title}</strong>
-              <small>Selected audio · v{selectedAsset.selectedVersion.version}</small>
-              <audio
-                key={selectedAsset.selectedVersion.id}
-                ref={(element) => { mediaRef.current = element; }}
-                preload="metadata"
-                src={getAssetFileUrl(selectedAsset.selectedVersion.file_path)}
-                onPlay={() => setIsPreviewPlaying(true)}
-                onPause={() => setIsPreviewPlaying(false)}
-                onEnded={() => setIsPreviewPlaying(false)}
-                onTimeUpdate={(event) => setPlayheadTime(Math.min(selectedClip.start_time + selectedClip.duration, selectedClip.start_time + event.currentTarget.currentTime * 1000))}
-              >Audio preview unavailable.</audio>
-            </div>
-          ) : <div className="timeline-preview-empty"><span aria-hidden="true">▶</span><strong>{selectedClip ? "No selected asset version" : "Select a clip to preview"}</strong><small>Clip Preview only — combined Timeline playback is not available.</small></div>}
-        </div>
+      <section className="timeline-preview-panel" aria-label="Full timeline preview">
+        <TimelinePreview
+          clips={clips}
+          mediaByVersion={previewMediaByVersion}
+          currentTime={playheadTime}
+          duration={timelineContentDuration}
+          playing={isPreviewPlaying}
+          onTimeChange={setPlayheadTime}
+          onPlayingChange={setIsPreviewPlaying}
+          onError={setError}
+        />
         <div className="timeline-transport" aria-label="Preview transport controls">
           <div className="timeline-transport-buttons">
             <Button variant="secondary" aria-label="Go to Timeline start" onClick={() => seekPlayhead(0)}>│◀</Button>
             <Button variant="secondary" aria-label="Move playhead back one second" onClick={() => seekPlayhead(playheadTime - 1000)}>−1s</Button>
-            <Button aria-label={isPreviewPlaying ? "Pause selected media" : "Play selected media"} onClick={togglePreviewPlayback} disabled={!selectedAsset?.selectedVersion}>{isPreviewPlaying ? "Pause" : "Play"}</Button>
+            <Button aria-label={isPreviewPlaying ? "Pause timeline" : "Play timeline"} onClick={togglePreviewPlayback} disabled={timelineContentDuration <= 0}>{isPreviewPlaying ? "Pause" : "Play"}</Button>
             <Button variant="secondary" aria-label="Move playhead forward one second" onClick={() => seekPlayhead(playheadTime + 1000)}>+1s</Button>
             <Button variant="secondary" aria-label="Go to Timeline end" onClick={() => seekPlayhead(timelineContentDuration)}>▶│</Button>
           </div>
@@ -644,7 +688,11 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
               aria-valuemin={0}
               aria-valuemax={Math.round(timelineContentDuration)}
               aria-valuenow={playheadTime}
-              onPointerDown={(event) => setPlayheadFromPointer(event, 66)}
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setPlayheadFromPointer(event, 66);
+              }}
+              onPointerMove={(event) => { if (isPlayheadDraggingRef.current) setPlayheadFromPointer(event, 66); }}
               onKeyDown={(event) => {
                 if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
                 event.preventDefault();
@@ -665,7 +713,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
                   onDrop={(event) => handleMediaDrop(event, track)}
                   onPointerDown={(event) => {
                     if (event.target !== event.currentTarget) return;
-                    setSelectedClipId(null);
+                    setSelectedClipIds(new Set());
                     setPlayheadFromPointer(event);
                   }}
                 >
@@ -675,8 +723,8 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
                     .sort((left, right) => left.start_time - right.start_time)
                     .map((clip) => {
                       const metadata = versionMedia.get(clip.asset_version_id);
-                      const isSelected = clip.id === selectedClipId;
-                      const isInteracting = interaction?.clipId === clip.id;
+                      const isSelected = selectedClipIds.has(clip.id);
+                      const isInteracting = interaction?.kind === "move" ? clip.id in interaction.groupStarts : interaction?.clipId === clip.id;
                       return (
                         <div
                           key={clip.id}
@@ -687,7 +735,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
                           onPointerDown={(event) => beginInteraction(event, clip, "move")}
                           onContextMenu={(event) => {
                             event.preventDefault();
-                            setSelectedClipId(clip.id);
+                            if (!selectedClipIds.has(clip.id)) setSelectedClipIds(new Set([clip.id]));
                             setContextMenu({
                               clipId: clip.id,
                               x: Math.max(8, Math.min(event.clientX, window.innerWidth - 190)),
@@ -697,7 +745,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
                           onKeyDown={(event) => {
                             if (event.key !== "Enter" && event.key !== " ") return;
                             event.preventDefault();
-                            setSelectedClipId(clip.id);
+                            selectClip(clip.id, event.ctrlKey || event.metaKey || event.shiftKey, !event.shiftKey);
                           }}
                           aria-pressed={isSelected}
                           aria-label={`${track} clip, ${metadata?.scene.title ?? "Unknown asset"}, starts at ${formatSeconds(clip.start_time)} seconds, duration ${formatSeconds(clip.duration)} seconds`}
@@ -717,7 +765,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
           </div>
         </div>
         <div className="timeline-toolbar">
-          <div><strong>Timeline</strong><span>{clipboard ? `${clipboard.track} clip copied` : "Right-click a clip for actions"}</span></div>
+          <div><Button variant="secondary" onClick={undoLastAction} disabled={Boolean(activeAction) || history.length === 0} aria-label={history.length ? `Undo ${history[history.length - 1].label}` : "Nothing to undo"}>↶ Undo</Button><strong>{selectedClips.length ? `${selectedClips.length} selected` : "Timeline"}</strong><span>{clipboard.length ? `${clipboard.length} clip${clipboard.length === 1 ? "" : "s"} copied` : "Right-click a clip for actions"}</span></div>
           <div className="timeline-zoom" aria-label="Timeline zoom controls">
             <Button variant="secondary" aria-label="Zoom out" onClick={() => setPixelsPerSecond((value) => Math.max(36, value - 18))} disabled={pixelsPerSecond <= 36}>−</Button>
             <span>{Math.round(pixelsPerSecond / DEFAULT_PIXELS_PER_SECOND * 100)}%</span>
@@ -728,27 +776,6 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
       </section>
       </main>
 
-      {selectedClip ? <aside className="timeline-properties" aria-labelledby="clip-editor-heading">
-          <header><div><p className="eyebrow">Selected clip</p><h2 id="clip-editor-heading">Properties</h2></div><button type="button" aria-label="Close clip properties" onClick={() => setSelectedClipId(null)}>×</button></header>
-            <div className="timeline-clip-summary">
-              <span className={`timeline-track-pill ${selectedClip.track.toLowerCase()}`}>{selectedClip.track}</span>
-              <strong>{selectedAsset?.scene.title ?? "Unknown asset"}</strong>
-              <dl>
-                <div><dt>Start</dt><dd>{formatSeconds(selectedClip.start_time)} sec</dd></div>
-                <div><dt>Duration</dt><dd>{formatSeconds(selectedClip.duration)} sec</dd></div>
-                <div><dt>Version</dt><dd>{selectedAsset?.selectedVersion ? `v${selectedAsset.selectedVersion.version}` : "None"}</dd></div>
-              </dl>
-              <small>This clip is locked to this exact asset version.</small>
-            </div>
-            {!selectedAsset?.selectedVersion ? <p className="timeline-panel-warning">This asset has no selected version to preview.</p> : null}
-            <form className="timeline-form" onSubmit={handleSaveTiming}>
-              <div className="timeline-form-row"><label>Start (sec)<input type="number" min="0" step="0.1" value={timingDraft.startSeconds} onChange={(event) => { const inputValue = event.currentTarget.value; setTimingDraft((current) => ({ ...current, startSeconds: inputValue })); }} required /></label><label>Duration (sec)<input type="number" min="0.1" step="0.1" value={timingDraft.durationSeconds} onChange={(event) => { const inputValue = event.currentTarget.value; setTimingDraft((current) => ({ ...current, durationSeconds: inputValue })); }} required /></label></div>
-              <Button type="submit" disabled={Boolean(activeAction)}>Save timing</Button>
-            </form>
-            <div className="timeline-playhead-split"><div><span>Playhead</span><strong>{formatSeconds(playheadTime)} sec</strong></div><Button variant="secondary" onClick={handleSplitAtPlayhead} disabled={Boolean(activeAction) || !playheadInsideSelectedClip}>Split at playhead</Button></div>
-            <div className="timeline-split-controls"><label>Precise split after (sec)<input type="number" min="0.1" step="0.1" value={timingDraft.splitSeconds} onChange={(event) => { const inputValue = event.currentTarget.value; setTimingDraft((current) => ({ ...current, splitSeconds: inputValue })); }} /></label><Button variant="secondary" onClick={handleSplit} disabled={Boolean(activeAction)}>Split clip</Button></div>
-            <Button variant="secondary" onClick={handleDelete} disabled={Boolean(activeAction)}>Delete clip</Button>
-      </aside> : null}
       </div>
       {contextMenu && contextClip ? <div
         ref={contextMenuRef}
@@ -765,14 +792,14 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
           buttons[(currentIndex + direction + buttons.length) % buttons.length]?.focus();
         }}
       >
-        <button role="menuitem" type="button" onClick={() => { setContextMenu(null); duplicateTimelineClip(contextClip); }}>Duplicate <kbd>Ctrl+D</kbd></button>
-        <button role="menuitem" type="button" onClick={() => { copyTimelineClip(contextClip); setContextMenu(null); }}>Copy <kbd>Ctrl+C</kbd></button>
-        <button role="menuitem" type="button" disabled={!clipboard} onClick={() => { setContextMenu(null); pasteTimelineClip(); }}>Paste <kbd>Ctrl+V</kbd></button>
+        <button role="menuitem" type="button" onClick={() => { setContextMenu(null); duplicateSelectedClips(); }}>Duplicate selection <kbd>Ctrl+D</kbd></button>
+        <button role="menuitem" type="button" onClick={() => { copySelectedClips(); setContextMenu(null); }}>Copy selection <kbd>Ctrl+C</kbd></button>
+        <button role="menuitem" type="button" disabled={!clipboard.length} onClick={() => { setContextMenu(null); addClipGroup(clipboard, playheadTime, "Paste clips"); }}>Paste at playhead <kbd>Ctrl+V</kbd></button>
         <span role="separator" />
-        <button role="menuitem" type="button" disabled={playheadTime <= contextClip.start_time || playheadTime >= contextClip.start_time + contextClip.duration} onClick={() => { setContextMenu(null); splitAtPlayhead(contextClip); }}>Split at playhead <kbd>Ctrl+B</kbd></button>
-        <button className="danger" role="menuitem" type="button" onClick={() => { setContextMenu(null); deleteTimelineClip(contextClip); }}>Delete <kbd>Del</kbd></button>
+        <button role="menuitem" type="button" disabled={selectedClips.length !== 1 || playheadTime <= contextClip.start_time || playheadTime >= contextClip.start_time + contextClip.duration} onClick={() => { setContextMenu(null); splitAtPlayhead(contextClip); }}>Split at playhead <kbd>Ctrl+B</kbd></button>
+        <button className="danger" role="menuitem" type="button" onClick={() => { setContextMenu(null); deleteSelectedClips(); }}>Delete selection <kbd>Del</kbd></button>
       </div> : null}
-      <p className="timeline-limitation-note">Clips are locked to exact asset versions. Combined synchronized preview and Render/Export UI are not enabled yet.</p>
+      <p className="timeline-limitation-note">Clips are locked to exact asset versions. Timeline preview follows render timing; Render/Export UI is not enabled yet.</p>
     </div>
   );
 }

@@ -17,6 +17,7 @@ export type TimelineClip = {
   track: TimelineTrack;
   start_time: number;
   duration: number;
+  source_offset: number;
 };
 
 export type TimelineClipTiming = Pick<TimelineClip, "start_time" | "duration">;

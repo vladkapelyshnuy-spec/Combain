@@ -232,7 +232,8 @@ pub fn get_timeline(
     timeline_repository::get_by_project(&db.conn(), project_id)
 }
 
-/// Input: `timeline_id`, `asset_version_id`, `track`, `start_time` (ms), `duration` (ms)
+/// Input: `timeline_id`, `asset_version_id`, `track`, `start_time` (ms), `duration` (ms),
+/// optional `source_offset` (ms)
 /// Output: newly created [`TimelineClip`]
 /// Error: [`AppError::InvalidInput`] if duration is 0 or timeline doesn't exist;
 ///        [`AppError::Db`] on storage failure
@@ -245,8 +246,10 @@ pub fn add_clip(
     track: Track,
     start_time: u64,
     duration: u64,
+    source_offset: Option<u64>,
 ) -> Result<TimelineClip, AppError> {
-    let clip = TimelineClip::new(timeline_id, asset_version_id, track, start_time, duration)?;
+    let clip = TimelineClip::new(timeline_id, asset_version_id, track, start_time, duration)?
+        .with_source_offset(source_offset.unwrap_or(0));
     let conn = db.conn();
     validate_video_range_available(&conn, timeline_id, None, track, start_time, duration)?;
     timeline_clip_repository::insert(&conn, &clip)?;
