@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use tauri::State;
 
 use crate::db::Database;
-use crate::domain::ids::{AssetId, ProjectId, TimelineClipId, TimelineId};
+use crate::domain::ids::{AssetVersionId, ProjectId, TimelineClipId, TimelineId};
 use crate::domain::timeline::Timeline;
 use crate::domain::timeline_clip::{TimelineClip, Track};
 use crate::error::AppError;
@@ -107,7 +107,7 @@ pub fn split_clip_impl(
     // Second clip: new clip starting after first, remaining duration
     let second_clip = TimelineClip::new(
         timeline_id,
-        original_clip.asset_id,
+        original_clip.asset_version_id,
         original_clip.track,
         original_clip.start_time + split_time,
         original_clip.duration - split_time,
@@ -178,7 +178,7 @@ pub fn get_timeline(
     timeline_repository::get_by_project(&db.conn(), project_id)
 }
 
-/// Input: `timeline_id`, `asset_id`, `track`, `start_time` (ms), `duration` (ms)
+/// Input: `timeline_id`, `asset_version_id`, `track`, `start_time` (ms), `duration` (ms)
 /// Output: newly created [`TimelineClip`]
 /// Error: [`AppError::InvalidInput`] if duration is 0 or timeline doesn't exist;
 ///        [`AppError::Db`] on storage failure
@@ -187,17 +187,18 @@ pub fn get_timeline(
 pub fn add_clip(
     db: State<'_, Database>,
     timeline_id: TimelineId,
-    asset_id: AssetId,
+    asset_version_id: AssetVersionId,
     track: Track,
     start_time: u64,
     duration: u64,
 ) -> Result<TimelineClip, AppError> {
-    let clip = TimelineClip::new(timeline_id, asset_id, track, start_time, duration)?;
+    let clip = TimelineClip::new(timeline_id, asset_version_id, track, start_time, duration)?;
     let conn = db.conn();
     timeline_clip_repository::insert(&conn, &clip)?;
     tracing::info!(
         clip_id = %clip.id,
         timeline_id = %timeline_id,
+        asset_version_id = %asset_version_id,
         track = ?track,
         start_time = start_time,
         duration = duration,
@@ -312,15 +313,17 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::domain::asset::{Asset, AssetType};
+    use crate::domain::asset_version::AssetVersion;
+    use crate::domain::ids::AssetVersionId;
     use crate::domain::project::Project;
     use crate::domain::scene::Scene;
-    use crate::repository::{asset_repository, project_repository, scene_repository};
+    use crate::repository::{asset_repository, asset_version_repository, project_repository, scene_repository};
 
     fn open_db() -> Database {
         Database::open_in_memory().expect("open db")
     }
 
-    fn seed_project_and_asset(db: &Database) -> (ProjectId, AssetId) {
+    fn seed_project_and_asset(db: &Database) -> (ProjectId, AssetVersionId) {
         let project = Project::new("Test Project", "topic", "style").expect("project");
         project_repository::insert(&db.conn(), &project).expect("insert project");
 
@@ -330,7 +333,18 @@ mod tests {
         let asset = Asset::new(scene.id, AssetType::Video);
         asset_repository::insert(&db.conn(), &asset).expect("insert asset");
 
-        (project.id, asset.id)
+        // Create asset version
+        let version = AssetVersion::new(
+            asset.id,
+            1,
+            "test_video.mp4",
+            "test_provider",
+            "test_model",
+            "test prompt",
+        ).expect("valid version");
+        asset_version_repository::insert(&db.conn(), &version).expect("insert version");
+
+        (project.id, version.id)
     }
 
     #[test]

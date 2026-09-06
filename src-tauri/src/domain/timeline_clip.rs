@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::ids::{AssetId, TimelineClipId, TimelineId};
+use crate::domain::ids::{AssetVersionId, TimelineClipId, TimelineId};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,7 +16,7 @@ pub enum Track {
 pub struct TimelineClip {
     pub id: TimelineClipId,
     pub timeline_id: TimelineId,
-    pub asset_id: AssetId,
+    pub asset_version_id: AssetVersionId,
     pub track: Track,
     /// Start offset in milliseconds, relative to the timeline origin.
     pub start_time: u64,
@@ -27,7 +27,7 @@ pub struct TimelineClip {
 impl TimelineClip {
     pub fn new(
         timeline_id: TimelineId,
-        asset_id: AssetId,
+        asset_version_id: AssetVersionId,
         track: Track,
         start_time: u64,
         duration: u64,
@@ -41,7 +41,7 @@ impl TimelineClip {
         Ok(Self {
             id: TimelineClipId::new(),
             timeline_id,
-            asset_id,
+            asset_version_id,
             track,
             start_time,
             duration,
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn creates_clip_on_video_track() {
-        let clip = TimelineClip::new(TimelineId::new(), AssetId::new(), Track::Video, 0, 5000)
+        let clip = TimelineClip::new(TimelineId::new(), AssetVersionId::new(), Track::Video, 0, 5000)
             .expect("valid clip");
         assert_eq!(clip.track, Track::Video);
         assert_eq!(clip.start_time, 0);
@@ -63,14 +63,14 @@ mod tests {
 
     #[test]
     fn rejects_zero_duration() {
-        let error = TimelineClip::new(TimelineId::new(), AssetId::new(), Track::Audio, 0, 0)
+        let error = TimelineClip::new(TimelineId::new(), AssetVersionId::new(), Track::Audio, 0, 0)
             .expect_err("zero duration");
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
     }
 
     #[test]
     fn serializes_and_deserializes() {
-        let clip = TimelineClip::new(TimelineId::new(), AssetId::new(), Track::Audio, 1000, 4000)
+        let clip = TimelineClip::new(TimelineId::new(), AssetVersionId::new(), Track::Audio, 1000, 4000)
             .expect("valid clip");
         let json = serde_json::to_string(&clip).expect("serialize");
         let back: TimelineClip = serde_json::from_str(&json).expect("deserialize");

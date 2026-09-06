@@ -32,6 +32,10 @@ const MIGRATIONS: &[Migration] = &[
         id: "0005_jobs",
         sql: include_str!("../../migrations/0005_jobs.sql"),
     },
+    Migration {
+        id: "0006_timeline_render_fixes",
+        sql: include_str!("../../migrations/0006_timeline_render_fixes.sql"),
+    },
 ];
 
 pub fn run(conn: &Connection) -> Result<(), AppError> {

@@ -68,6 +68,7 @@ pub fn run() {
             commands::timeline_commands::trim_clip,
             commands::timeline_commands::split_clip,
             commands::render_commands::render_video,
+            commands::render_commands::get_latest_render_job,
             commands::provider_profile_commands::list_provider_profiles,
             commands::provider_profile_commands::create_provider_profile,
             commands::provider_profile_commands::update_provider_profile,
