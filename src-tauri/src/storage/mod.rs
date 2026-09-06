@@ -95,6 +95,36 @@ pub fn looks_like_mp3(bytes: &[u8]) -> bool {
     false
 }
 
+/// Deterministic on-disk path for renders directory for a project.
+///
+/// `<data_root>/projects/<project_id>/renders/`
+pub fn renders_dir(data_root: &Path, project_id: ProjectId) -> PathBuf {
+    data_root
+        .join("projects")
+        .join(project_id.to_string())
+        .join("renders")
+}
+
+/// Construct full path for a render output file.
+///
+/// `<data_root>/projects/<project_id>/renders/<output_name>.mp4`
+pub fn render_output_path(data_root: &Path, project_id: ProjectId, output_name: &str) -> PathBuf {
+    renders_dir(data_root, project_id).join(format!("{output_name}.mp4"))
+}
+
+/// Check if render output file already exists.
+pub fn render_output_exists(data_root: &Path, project_id: ProjectId, output_name: &str) -> bool {
+    render_output_path(data_root, project_id, output_name).exists()
+}
+
+/// Create renders directory if it doesn't exist.
+pub fn ensure_renders_dir(data_root: &Path, project_id: ProjectId) -> Result<PathBuf, AppError> {
+    let dir = renders_dir(data_root, project_id);
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| AppError::io(format!("failed to create {}: {error}", dir.display())))?;
+    Ok(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +183,44 @@ mod tests {
     fn rejects_short_buffer_mp3() {
         assert!(!looks_like_mp3(&[0xFF]));
         assert!(!looks_like_mp3(&[]));
+    }
+
+    #[test]
+    fn renders_dir_path_is_correct() {
+        let data_root = Path::new("/data");
+        let project_id = ProjectId::new();
+        let path = renders_dir(data_root, project_id);
+        assert_eq!(
+            path,
+            data_root
+                .join("projects")
+                .join(project_id.to_string())
+                .join("renders")
+        );
+    }
+
+    #[test]
+    fn render_output_path_includes_mp4_extension() {
+        let data_root = Path::new("/data");
+        let project_id = ProjectId::new();
+        let path = render_output_path(data_root, project_id, "final_video");
+        assert!(path.to_string_lossy().ends_with("final_video.mp4"));
+    }
+
+    #[test]
+    fn render_output_exists_returns_false_for_nonexistent() {
+        let temp_dir = std::env::temp_dir();
+        let project_id = ProjectId::new();
+        assert!(!render_output_exists(&temp_dir, project_id, "nonexistent"));
+    }
+
+    #[test]
+    fn ensure_renders_dir_creates_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let project_id = ProjectId::new();
+
+        let dir = ensure_renders_dir(temp_dir.path(), project_id).expect("create dir");
+        assert!(dir.exists());
+        assert!(dir.is_dir());
     }
 }

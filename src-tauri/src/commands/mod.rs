@@ -1,8 +1,10 @@
 pub mod asset_commands;
 pub mod project_commands;
 pub mod provider_profile_commands;
+pub mod render_commands;
 pub mod scene_commands;
 pub mod script_commands;
+pub mod timeline_commands;
 
 use serde::Serialize;
 use tauri::State;
