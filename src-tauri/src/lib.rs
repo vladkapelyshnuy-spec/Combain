@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod domain;
 mod error;
+mod ffmpeg;
 mod logging;
 mod paths;
 mod provider;
@@ -53,6 +54,19 @@ pub fn run() {
             commands::asset_commands::get_assets,
             commands::asset_commands::get_asset_versions,
             commands::asset_commands::select_asset_version,
+            commands::asset_commands::get_job_status,
+            commands::asset_commands::list_jobs,
+            commands::asset_commands::cancel_job,
+            commands::timeline_commands::create_timeline,
+            commands::timeline_commands::get_timeline,
+            commands::timeline_commands::add_clip,
+            commands::timeline_commands::update_clip,
+            commands::timeline_commands::delete_clip,
+            commands::timeline_commands::list_clips,
+            commands::timeline_commands::move_clip,
+            commands::timeline_commands::trim_clip,
+            commands::timeline_commands::split_clip,
+            commands::render_commands::render_video,
             commands::provider_profile_commands::list_provider_profiles,
             commands::provider_profile_commands::create_provider_profile,
             commands::provider_profile_commands::update_provider_profile,

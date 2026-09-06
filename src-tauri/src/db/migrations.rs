@@ -24,6 +24,14 @@ const MIGRATIONS: &[Migration] = &[
         id: "0003_royaltechno_video_provider",
         sql: include_str!("../../migrations/0003_royaltechno_video_provider.sql"),
     },
+    Migration {
+        id: "0004_elevenlabs_tts_provider",
+        sql: include_str!("../../migrations/0004_elevenlabs_tts_provider.sql"),
+    },
+    Migration {
+        id: "0005_jobs",
+        sql: include_str!("../../migrations/0005_jobs.sql"),
+    },
 ];
 
 pub fn run(conn: &Connection) -> Result<(), AppError> {

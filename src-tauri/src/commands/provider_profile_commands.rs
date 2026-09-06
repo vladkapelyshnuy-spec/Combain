@@ -294,12 +294,12 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("to_dto");
 
-        // Migration 0003 adds a RoyalTechno Video provider, so we expect 2 profiles total
-        assert_eq!(profiles.len(), 2);
-        // Find the profile we created (not the migrated one)
+        // Migrations add: 0003 RoyalTechno Video + 0004 ElevenLabs TTS = 3 total
+        assert_eq!(profiles.len(), 3);
+        // Find the profile we created (not the migrated ones)
         let created_profile = profiles
             .iter()
-            .find(|p| p.profile_name != "RoyalTechno Video")
+            .find(|p| p.profile_name != "RoyalTechno Video" && p.profile_name != "ElevenLabs TTS")
             .expect("find created profile");
         assert!(created_profile.has_api_key);
     }
