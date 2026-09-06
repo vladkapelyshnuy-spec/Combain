@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::domain::{AssetId, JobId, SceneId};
+use crate::domain::{AssetId, JobId, SceneId, TimelineId};
 use crate::error::AppError;
 
 /// Type of job operation.
@@ -90,6 +90,8 @@ pub struct Job {
     pub provider_operation_id: Option<String>,
     pub scene_id: Option<SceneId>,
     pub asset_id: Option<AssetId>,
+    pub timeline_id: Option<TimelineId>,
+    pub output_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -108,6 +110,8 @@ impl Job {
             provider_operation_id: None,
             scene_id,
             asset_id: None,
+            timeline_id: None,
+            output_path: None,
             created_at: now.clone(),
             updated_at: now,
             completed_at: None,
@@ -165,6 +169,18 @@ impl Job {
     /// Set asset ID when asset is created.
     pub fn set_asset_id(&mut self, asset_id: AssetId) {
         self.asset_id = Some(asset_id);
+        self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+
+    /// Set timeline ID for render jobs.
+    pub fn set_timeline_id(&mut self, timeline_id: TimelineId) {
+        self.timeline_id = Some(timeline_id);
+        self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+
+    /// Set output path for render jobs.
+    pub fn set_output_path(&mut self, output_path: String) {
+        self.output_path = Some(output_path);
         self.updated_at = chrono::Utc::now().to_rfc3339();
     }
 }

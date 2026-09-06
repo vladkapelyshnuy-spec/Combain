@@ -1,15 +1,16 @@
-mod commands;
-mod config;
-mod db;
-mod domain;
-mod error;
-mod ffmpeg;
-mod logging;
-mod paths;
-mod provider;
-mod repository;
-mod secrets;
-mod storage;
+pub mod commands;
+pub mod config;
+pub mod db;
+pub mod domain;
+pub mod error;
+pub mod ffmpeg;
+pub mod logging;
+pub mod paths;
+pub mod provider;
+pub mod repository;
+pub mod secrets;
+pub mod storage;
+pub mod validation;
 
 use config::AppConfig;
 use db::Database;
@@ -67,6 +68,7 @@ pub fn run() {
             commands::timeline_commands::trim_clip,
             commands::timeline_commands::split_clip,
             commands::render_commands::render_video,
+            commands::render_commands::get_latest_render_job,
             commands::provider_profile_commands::list_provider_profiles,
             commands::provider_profile_commands::create_provider_profile,
             commands::provider_profile_commands::update_provider_profile,

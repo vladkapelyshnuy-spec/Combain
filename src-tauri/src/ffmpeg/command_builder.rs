@@ -1,18 +1,28 @@
 //! FFmpeg command builder for video rendering.
 //!
 //! Constructs complex FFmpeg commands with filter graphs for concatenating
-//! video and audio streams from timeline clips.
+//! video and audio streams from timeline clips, respecting clip timing (start_time, duration).
 
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
+/// Clip timing information for FFmpeg rendering.
+#[derive(Debug, Clone)]
+pub struct ClipTiming {
+    pub file_path: PathBuf,
+    /// Start time in milliseconds (clip position on timeline).
+    pub start_ms: u64,
+    /// Duration in milliseconds (how long the clip plays).
+    pub duration_ms: u64,
+}
+
 /// Configuration for FFmpeg render output.
 #[derive(Debug, Clone)]
 pub struct RenderConfig {
     pub output_path: PathBuf,
-    pub video_inputs: Vec<PathBuf>,
-    pub audio_inputs: Vec<PathBuf>,
+    pub video_clips: Vec<ClipTiming>,
+    pub audio_clips: Vec<ClipTiming>,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -21,13 +31,13 @@ pub struct RenderConfig {
 impl RenderConfig {
     pub fn new(
         output_path: PathBuf,
-        video_inputs: Vec<PathBuf>,
-        audio_inputs: Vec<PathBuf>,
+        video_clips: Vec<ClipTiming>,
+        audio_clips: Vec<ClipTiming>,
     ) -> Self {
         Self {
             output_path,
-            video_inputs,
-            audio_inputs,
+            video_clips,
+            audio_clips,
             width: 1920,
             height: 1080,
             fps: 30,
@@ -39,7 +49,8 @@ impl RenderConfig {
 ///
 /// Constructs a command with:
 /// - Multiple input files (videos and audios)
-/// - Complex filter graph for concatenation
+/// - Complex filter graph with trim/setpts for each clip
+/// - Concatenation of trimmed streams
 /// - H.264 video codec
 /// - AAC audio codec
 /// - Fixed resolution and frame rate
@@ -47,7 +58,7 @@ pub fn build_render_command(
     ffmpeg_path: &Path,
     config: &RenderConfig,
 ) -> Result<std::process::Command, AppError> {
-    if config.video_inputs.is_empty() {
+    if config.video_clips.is_empty() {
         return Err(AppError::invalid_input(
             "cannot render timeline with no video clips",
         ));
@@ -57,22 +68,21 @@ pub fn build_render_command(
     cmd.arg("-y"); // Overwrite output (we already checked it doesn't exist)
 
     // Add all input files
-    for video_input in &config.video_inputs {
-        cmd.arg("-i").arg(video_input);
+    for video_clip in &config.video_clips {
+        cmd.arg("-i").arg(&video_clip.file_path);
     }
-    for audio_input in &config.audio_inputs {
-        cmd.arg("-i").arg(audio_input);
+    for audio_clip in &config.audio_clips {
+        cmd.arg("-i").arg(&audio_clip.file_path);
     }
 
-    // Build filter complex
-    let filter_complex =
-        build_filter_complex(config.video_inputs.len(), config.audio_inputs.len())?;
+    // Build filter complex with timing
+    let filter_complex = build_filter_complex(&config.video_clips, &config.audio_clips)?;
     cmd.arg("-filter_complex").arg(filter_complex);
 
     // Map outputs from filter
     cmd.arg("-map").arg("[vout]");
 
-    if !config.audio_inputs.is_empty() {
+    if !config.audio_clips.is_empty() {
         cmd.arg("-map").arg("[aout]");
     }
 
@@ -82,7 +92,7 @@ pub fn build_render_command(
     cmd.arg("-crf").arg("23");
 
     // Audio codec settings (if we have audio)
-    if !config.audio_inputs.is_empty() {
+    if !config.audio_clips.is_empty() {
         cmd.arg("-c:a").arg("aac");
         cmd.arg("-b:a").arg("192k");
     }
@@ -98,31 +108,66 @@ pub fn build_render_command(
     Ok(cmd)
 }
 
-/// Build filter_complex string for concatenating streams.
+/// Build filter_complex string for concatenating streams with timing.
 ///
-/// Video concat: [0:v][1:v]...[N:v]concat=n=N:v=1:a=0[vout]
-/// Audio concat: [N+1:a][N+2:a]...concat=n=M:v=0:a=1[aout]
-fn build_filter_complex(video_count: usize, audio_count: usize) -> Result<String, AppError> {
-    if video_count == 0 {
-        return Err(AppError::invalid_input("no video inputs for filter"));
+/// For each video input, apply trim (to extract the desired duration) and setpts (to reset timestamps).
+/// Then concat all trimmed streams.
+///
+/// Example for 2 video clips:
+/// [0:v]trim=duration=5.5,setpts=PTS-STARTPTS[v0];
+/// [1:v]trim=duration=3.2,setpts=PTS-STARTPTS[v1];
+/// [v0][v1]concat=n=2:v=1:a=0[vout]
+///
+/// Same for audio with atrim and asetpts.
+fn build_filter_complex(
+    video_clips: &[ClipTiming],
+    audio_clips: &[ClipTiming],
+) -> Result<String, AppError> {
+    if video_clips.is_empty() {
+        return Err(AppError::invalid_input("no video clips for filter"));
     }
 
     let mut filter = String::new();
 
-    // Video concat filter
-    for i in 0..video_count {
-        filter.push_str(&format!("[{}:v]", i));
-    }
-    filter.push_str(&format!("concat=n={}:v=1:a=0[vout]", video_count));
-
-    // Audio concat filter (if we have audio)
-    if audio_count > 0 {
-        filter.push(';');
-        for i in 0..audio_count {
-            let input_idx = video_count + i;
-            filter.push_str(&format!("[{}:a]", input_idx));
+    // Video trim + concat filter
+    for (i, clip) in video_clips.iter().enumerate() {
+        let duration_sec = clip.duration_ms as f64 / 1000.0;
+        filter.push_str(&format!(
+            "[{}:v]trim=duration={:.3},setpts=PTS-STARTPTS[v{}]",
+            i, duration_sec, i
+        ));
+        if i < video_clips.len() - 1 || !audio_clips.is_empty() {
+            filter.push(';');
         }
-        filter.push_str(&format!("concat=n={}:v=0:a=1[aout]", audio_count));
+    }
+
+    // Concat video streams
+    for i in 0..video_clips.len() {
+        filter.push_str(&format!("[v{}]", i));
+    }
+    filter.push_str(&format!("concat=n={}:v=1:a=0[vout]", video_clips.len()));
+
+    // Audio trim + concat filter (if we have audio)
+    if !audio_clips.is_empty() {
+        filter.push(';');
+
+        for (i, clip) in audio_clips.iter().enumerate() {
+            let duration_sec = clip.duration_ms as f64 / 1000.0;
+            let input_idx = video_clips.len() + i;
+            filter.push_str(&format!(
+                "[{}:a]atrim=duration={:.3},asetpts=PTS-STARTPTS[a{}]",
+                input_idx, duration_sec, i
+            ));
+            if i < audio_clips.len() - 1 {
+                filter.push(';');
+            }
+        }
+
+        filter.push(';');
+        for i in 0..audio_clips.len() {
+            filter.push_str(&format!("[a{}]", i));
+        }
+        filter.push_str(&format!("concat=n={}:v=0:a=1[aout]", audio_clips.len()));
     }
 
     Ok(filter)
@@ -134,28 +179,75 @@ mod tests {
 
     #[test]
     fn builds_filter_for_single_video() {
-        let filter = build_filter_complex(1, 0).expect("single video");
-        assert_eq!(filter, "[0:v]concat=n=1:v=1:a=0[vout]");
+        let clips = vec![ClipTiming {
+            file_path: PathBuf::from("/tmp/video1.mp4"),
+            start_ms: 0,
+            duration_ms: 5500,
+        }];
+        let filter = build_filter_complex(&clips, &[]).expect("single video");
+        assert!(filter.contains("[0:v]trim=duration=5.500"));
+        assert!(filter.contains("setpts=PTS-STARTPTS[v0]"));
+        assert!(filter.contains("[v0]concat=n=1:v=1:a=0[vout]"));
     }
 
     #[test]
     fn builds_filter_for_multiple_videos() {
-        let filter = build_filter_complex(3, 0).expect("multiple videos");
-        assert_eq!(filter, "[0:v][1:v][2:v]concat=n=3:v=1:a=0[vout]");
+        let clips = vec![
+            ClipTiming {
+                file_path: PathBuf::from("/tmp/video1.mp4"),
+                start_ms: 0,
+                duration_ms: 5000,
+            },
+            ClipTiming {
+                file_path: PathBuf::from("/tmp/video2.mp4"),
+                start_ms: 5000,
+                duration_ms: 3000,
+            },
+        ];
+        let filter = build_filter_complex(&clips, &[]).expect("multiple videos");
+        assert!(filter.contains("[0:v]trim=duration=5.000"));
+        assert!(filter.contains("[1:v]trim=duration=3.000"));
+        assert!(filter.contains("[v0][v1]concat=n=2:v=1:a=0[vout]"));
     }
 
     #[test]
     fn builds_filter_for_videos_and_audios() {
-        let filter = build_filter_complex(2, 2).expect("video and audio");
-        assert_eq!(
-            filter,
-            "[0:v][1:v]concat=n=2:v=1:a=0[vout];[2:a][3:a]concat=n=2:v=0:a=1[aout]"
-        );
+        let video_clips = vec![
+            ClipTiming {
+                file_path: PathBuf::from("/tmp/video1.mp4"),
+                start_ms: 0,
+                duration_ms: 5000,
+            },
+            ClipTiming {
+                file_path: PathBuf::from("/tmp/video2.mp4"),
+                start_ms: 5000,
+                duration_ms: 3000,
+            },
+        ];
+        let audio_clips = vec![
+            ClipTiming {
+                file_path: PathBuf::from("/tmp/audio1.mp3"),
+                start_ms: 0,
+                duration_ms: 5000,
+            },
+            ClipTiming {
+                file_path: PathBuf::from("/tmp/audio2.mp3"),
+                start_ms: 5000,
+                duration_ms: 3000,
+            },
+        ];
+        let filter = build_filter_complex(&video_clips, &audio_clips).expect("video and audio");
+        assert!(filter.contains("[0:v]trim=duration=5.000"));
+        assert!(filter.contains("[1:v]trim=duration=3.000"));
+        assert!(filter.contains("[2:a]atrim=duration=5.000"));
+        assert!(filter.contains("[3:a]atrim=duration=3.000"));
+        assert!(filter.contains("[v0][v1]concat=n=2:v=1:a=0[vout]"));
+        assert!(filter.contains("[a0][a1]concat=n=2:v=0:a=1[aout]"));
     }
 
     #[test]
     fn rejects_zero_video_inputs() {
-        let error = build_filter_complex(0, 1).expect_err("zero videos");
+        let error = build_filter_complex(&[], &[]).expect_err("zero videos");
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
     }
 
@@ -164,10 +256,22 @@ mod tests {
         let config = RenderConfig::new(
             PathBuf::from("/tmp/output.mp4"),
             vec![
-                PathBuf::from("/tmp/video1.mp4"),
-                PathBuf::from("/tmp/video2.mp4"),
+                ClipTiming {
+                    file_path: PathBuf::from("/tmp/video1.mp4"),
+                    start_ms: 0,
+                    duration_ms: 5000,
+                },
+                ClipTiming {
+                    file_path: PathBuf::from("/tmp/video2.mp4"),
+                    start_ms: 5000,
+                    duration_ms: 3000,
+                },
             ],
-            vec![PathBuf::from("/tmp/audio1.mp3")],
+            vec![ClipTiming {
+                file_path: PathBuf::from("/tmp/audio1.mp3"),
+                start_ms: 0,
+                duration_ms: 8000,
+            }],
         );
 
         let cmd = build_render_command(Path::new("ffmpeg"), &config).expect("build command");
@@ -196,7 +300,11 @@ mod tests {
     fn command_omits_audio_map_when_no_audio() {
         let config = RenderConfig::new(
             PathBuf::from("/tmp/output.mp4"),
-            vec![PathBuf::from("/tmp/video1.mp4")],
+            vec![ClipTiming {
+                file_path: PathBuf::from("/tmp/video1.mp4"),
+                start_ms: 0,
+                duration_ms: 5000,
+            }],
             vec![], // No audio
         );
 

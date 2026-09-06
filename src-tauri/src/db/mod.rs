@@ -36,8 +36,7 @@ impl Database {
         Self::from_connection(conn)
     }
 
-    /// Open an in-memory database. Used by tests.
-    #[cfg(test)]
+    /// Open an in-memory database. Used by tests and integration tests.
     pub fn open_in_memory() -> Result<Self, AppError> {
         let conn = Connection::open_in_memory()
             .map_err(|error| AppError::db(format!("failed to open in-memory database: {error}")))?;

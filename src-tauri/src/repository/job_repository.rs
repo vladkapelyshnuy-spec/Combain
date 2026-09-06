@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Connection, Row};
 
-use crate::domain::{AssetId, Job, JobId, JobStatus, JobType, SceneId};
+use crate::domain::{AssetId, Job, JobId, JobStatus, JobType, SceneId, TimelineId};
 use crate::error::AppError;
 
 /// Parse job_type string from database.
@@ -35,6 +35,7 @@ fn row_to_job(row: &Row) -> rusqlite::Result<Job> {
 
     let scene_id_str: Option<String> = row.get("scene_id").ok().flatten();
     let asset_id_str: Option<String> = row.get("asset_id").ok().flatten();
+    let timeline_id_str: Option<String> = row.get("timeline_id").ok().flatten();
 
     // Handle both old 'error' column and new 'error_message' column
     let error_message: Option<String> = row
@@ -44,6 +45,7 @@ fn row_to_job(row: &Row) -> rusqlite::Result<Job> {
         .or_else(|| row.get("error").ok().flatten());
 
     let provider_operation_id: Option<String> = row.get("provider_operation_id").ok().flatten();
+    let output_path: Option<String> = row.get("output_path").ok().flatten();
     let completed_at: Option<String> = row.get("completed_at").ok().flatten();
 
     Ok(Job {
@@ -59,6 +61,10 @@ fn row_to_job(row: &Row) -> rusqlite::Result<Job> {
         asset_id: asset_id_str
             .and_then(|s| s.parse().ok())
             .map(AssetId::from_uuid),
+        timeline_id: timeline_id_str
+            .and_then(|s| s.parse().ok())
+            .map(TimelineId::from_uuid),
+        output_path,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         completed_at,
@@ -70,9 +76,9 @@ pub fn insert(conn: &Connection, job: &Job) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO jobs (
             id, job_type, status, progress, error_message,
-            provider_operation_id, scene_id, asset_id,
+            provider_operation_id, scene_id, asset_id, timeline_id, output_path,
             created_at, updated_at, completed_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             job.id.to_string(),
             job.job_type.to_string(),
@@ -82,6 +88,8 @@ pub fn insert(conn: &Connection, job: &Job) -> Result<(), AppError> {
             job.provider_operation_id,
             job.scene_id.as_ref().map(|id| id.to_string()),
             job.asset_id.as_ref().map(|id| id.to_string()),
+            job.timeline_id.as_ref().map(|id| id.to_string()),
+            job.output_path,
             job.created_at,
             job.updated_at,
             job.completed_at,
@@ -96,7 +104,7 @@ pub fn get_by_id(conn: &Connection, id: JobId) -> Result<Option<Job>, AppError> 
     let mut stmt = conn
         .prepare(
             "SELECT id, job_type, status, progress, error_message,
-             provider_operation_id, scene_id, asset_id,
+             provider_operation_id, scene_id, asset_id, timeline_id, output_path,
              created_at, updated_at, completed_at
              FROM jobs WHERE id = ?1",
         )
@@ -117,7 +125,7 @@ pub fn list_by_scene(conn: &Connection, scene_id: SceneId) -> Result<Vec<Job>, A
     let mut stmt = conn
         .prepare(
             "SELECT id, job_type, status, progress, error_message,
-             provider_operation_id, scene_id, asset_id,
+             provider_operation_id, scene_id, asset_id, timeline_id, output_path,
              created_at, updated_at, completed_at
              FROM jobs WHERE scene_id = ?1
              ORDER BY created_at DESC",
@@ -137,7 +145,7 @@ pub fn list_by_status(conn: &Connection, status: JobStatus) -> Result<Vec<Job>, 
     let mut stmt = conn
         .prepare(
             "SELECT id, job_type, status, progress, error_message,
-             provider_operation_id, scene_id, asset_id,
+             provider_operation_id, scene_id, asset_id, timeline_id, output_path,
              created_at, updated_at, completed_at
              FROM jobs WHERE status = ?1
              ORDER BY created_at DESC",
@@ -222,6 +230,64 @@ pub fn update_asset_id(conn: &Connection, id: JobId, asset_id: AssetId) -> Resul
     )
     .map_err(crate::db::map_db_err)?;
     Ok(())
+}
+
+/// Update timeline ID for render jobs.
+pub fn update_timeline_id(
+    conn: &Connection,
+    id: JobId,
+    timeline_id: TimelineId,
+) -> Result<(), AppError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE jobs SET timeline_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![timeline_id.to_string(), now, id.to_string()],
+    )
+    .map_err(crate::db::map_db_err)?;
+    Ok(())
+}
+
+/// Update output path for render jobs.
+pub fn update_output_path(
+    conn: &Connection,
+    id: JobId,
+    output_path: String,
+) -> Result<(), AppError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE jobs SET output_path = ?1, updated_at = ?2 WHERE id = ?3",
+        params![output_path, now, id.to_string()],
+    )
+    .map_err(crate::db::map_db_err)?;
+    Ok(())
+}
+
+/// Get the latest render job for a timeline (most recent created_at).
+/// Useful for UI to re-attach to render progress after app restart.
+pub fn get_latest_by_timeline(
+    conn: &Connection,
+    timeline_id: TimelineId,
+) -> Result<Option<Job>, AppError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, job_type, status, progress, error_message,
+             provider_operation_id, scene_id, asset_id, timeline_id, output_path,
+             created_at, updated_at, completed_at
+             FROM jobs
+             WHERE timeline_id = ?1
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .map_err(crate::db::map_db_err)?;
+
+    let mut rows = stmt
+        .query(params![timeline_id.to_string()])
+        .map_err(crate::db::map_db_err)?;
+
+    match rows.next().map_err(crate::db::map_db_err)? {
+        Some(row) => Ok(Some(row_to_job(row).map_err(crate::db::map_db_err)?)),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -353,5 +419,93 @@ mod tests {
         let completed = list_by_status(&db.conn(), JobStatus::Completed).expect("list completed");
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].id, job1.id);
+    }
+
+    #[test]
+    fn get_latest_by_timeline_returns_most_recent() {
+        use crate::domain::{Project, Timeline};
+        use crate::repository::{project_repository, timeline_repository};
+
+        let db = open_db();
+        let project = Project::new("Test", "topic", "style").expect("project");
+        project_repository::insert(&db.conn(), &project).expect("insert");
+
+        let timeline = Timeline::new(project.id);
+        timeline_repository::insert(&db.conn(), &timeline).expect("insert timeline");
+
+        // Create two render jobs for the same timeline
+        let mut job1 = Job::new(JobType::Render, None);
+        job1.set_timeline_id(timeline.id);
+        job1.set_output_path("/tmp/render1.mp4".to_string());
+        insert(&db.conn(), &job1).expect("insert job1");
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let mut job2 = Job::new(JobType::Render, None);
+        job2.set_timeline_id(timeline.id);
+        job2.set_output_path("/tmp/render2.mp4".to_string());
+        insert(&db.conn(), &job2).expect("insert job2");
+
+        let latest = get_latest_by_timeline(&db.conn(), timeline.id)
+            .expect("get latest")
+            .expect("found");
+
+        assert_eq!(latest.id, job2.id);
+        assert_eq!(latest.output_path.as_deref(), Some("/tmp/render2.mp4"));
+    }
+
+    #[test]
+    fn get_latest_by_timeline_returns_none_when_no_jobs() {
+        use crate::domain::{Project, Timeline};
+        use crate::repository::{project_repository, timeline_repository};
+
+        let db = open_db();
+        let project = Project::new("Test", "topic", "style").expect("project");
+        project_repository::insert(&db.conn(), &project).expect("insert");
+
+        let timeline = Timeline::new(project.id);
+        timeline_repository::insert(&db.conn(), &timeline).expect("insert timeline");
+
+        let latest = get_latest_by_timeline(&db.conn(), timeline.id).expect("get latest");
+        assert!(latest.is_none());
+    }
+
+    #[test]
+    fn update_timeline_id_stores_value() {
+        use crate::domain::{Project, Timeline};
+        use crate::repository::{project_repository, timeline_repository};
+
+        let db = open_db();
+        let scene_id = seed_scene(&db);
+        let project = Project::new("Test", "topic", "style").expect("project");
+        project_repository::insert(&db.conn(), &project).expect("insert");
+
+        let timeline = Timeline::new(project.id);
+        timeline_repository::insert(&db.conn(), &timeline).expect("insert timeline");
+
+        let job = Job::new(JobType::Render, Some(scene_id));
+        insert(&db.conn(), &job).expect("insert");
+
+        update_timeline_id(&db.conn(), job.id, timeline.id).expect("update");
+
+        let loaded = get_by_id(&db.conn(), job.id)
+            .expect("get")
+            .expect("found");
+        assert_eq!(loaded.timeline_id, Some(timeline.id));
+    }
+
+    #[test]
+    fn update_output_path_stores_value() {
+        let db = open_db();
+        let scene_id = seed_scene(&db);
+        let job = Job::new(JobType::Render, Some(scene_id));
+        insert(&db.conn(), &job).expect("insert");
+
+        update_output_path(&db.conn(), job.id, "/tmp/output.mp4".to_string()).expect("update");
+
+        let loaded = get_by_id(&db.conn(), job.id)
+            .expect("get")
+            .expect("found");
+        assert_eq!(loaded.output_path.as_deref(), Some("/tmp/output.mp4"));
     }
 }
