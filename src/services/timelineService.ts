@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AssetId } from "../models/asset";
+import type { AssetVersionId } from "../models/asset";
 import type { ProjectId } from "../models/project";
 import type { Timeline, TimelineClip, TimelineClipId, TimelineId, TimelineTrack } from "../models/timeline";
 
@@ -15,8 +15,8 @@ export function listClips(timelineId: TimelineId): Promise<TimelineClip[]> {
   return invoke<TimelineClip[]>("list_clips", { timelineId });
 }
 
-export function addClip(timelineId: TimelineId, assetId: AssetId, track: TimelineTrack, startTime: number, duration: number): Promise<TimelineClip> {
-  return invoke<TimelineClip>("add_clip", { timelineId, assetId, track, startTime, duration });
+export function addClip(timelineId: TimelineId, assetVersionId: AssetVersionId, track: TimelineTrack, startTime: number, duration: number): Promise<TimelineClip> {
+  return invoke<TimelineClip>("add_clip", { timelineId, assetVersionId, track, startTime, duration });
 }
 
 export function updateClip(clipId: TimelineClipId, startTime: number, duration: number): Promise<TimelineClip> {

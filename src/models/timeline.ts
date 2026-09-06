@@ -1,4 +1,4 @@
-import type { AssetId } from "./asset";
+import type { AssetVersionId } from "./asset";
 import type { ProjectId } from "./project";
 
 export type TimelineId = string;
@@ -13,7 +13,7 @@ export type Timeline = {
 export type TimelineClip = {
   id: TimelineClipId;
   timeline_id: TimelineId;
-  asset_id: AssetId;
+  asset_version_id: AssetVersionId;
   track: TimelineTrack;
   start_time: number;
   duration: number;

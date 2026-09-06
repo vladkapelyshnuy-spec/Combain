@@ -12,7 +12,7 @@ import { getScenes } from "../services/sceneService";
 import { addClip, createTimeline, deleteClip, getTimeline, listClips, moveClip, splitClip, trimClip, updateClip } from "../services/timelineService";
 
 type TimelinePageProps = { selectedProject: Project | null; onNavigate: (path: AppPath) => void };
-type TimelineAsset = { asset: Asset; scene: Scene; selectedVersion: AssetVersion | null };
+type TimelineAsset = { asset: Asset; scene: Scene; versions: AssetVersion[]; selectedVersion: AssetVersion | null };
 type TimingDraft = { startSeconds: string; durationSeconds: string; splitSeconds: string };
 type TimelineCandidate = { item: TimelineAsset; track: TimelineTrack; startTime: number; duration: number };
 type TimelineInteraction = {
@@ -24,7 +24,7 @@ type TimelineInteraction = {
   previewStart: number;
   previewDuration: number;
 };
-type TimelineClipboard = Pick<TimelineClip, "asset_id" | "track" | "duration">;
+type TimelineClipboard = Pick<TimelineClip, "asset_version_id" | "track" | "duration">;
 type TimelineContextMenu = { clipId: string; x: number; y: number };
 type MediaFilter = "ALL" | "VIDEO" | "AUDIO" | "IMAGE";
 type TimelineDropTarget = { track: TimelineTrack; startTime: number; duration: number; valid: boolean };
@@ -102,8 +102,9 @@ async function addMissingClips(
   timelineId: string,
   currentClips: TimelineClip[],
   candidates: TimelineCandidate[],
+  versionAssetIds: Map<string, string>,
 ) {
-  const existingKeys = new Set(currentClips.map((clip) => getClipKey(clip.asset_id, clip.track)));
+  const existingKeys = new Set(currentClips.map((clip) => getClipKey(versionAssetIds.get(clip.asset_version_id) ?? clip.asset_version_id, clip.track)));
   const createdClips: TimelineClip[] = [];
 
   for (const candidate of candidates) {
@@ -111,7 +112,7 @@ async function addMissingClips(
     if (existingKeys.has(key)) continue;
     createdClips.push(await addClip(
       timelineId,
-      candidate.item.asset.id,
+      candidate.item.selectedVersion!.id,
       candidate.track,
       candidate.startTime,
       candidate.duration,
@@ -162,18 +163,19 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
           const sceneMedia = await getAssets(scene.id);
           return Promise.all(sceneMedia.map(async (asset) => {
             const versions = await getAssetVersions(asset.id);
-            return { asset, scene, selectedVersion: versions.find((version) => version.selected) ?? null } satisfies TimelineAsset;
+            return { asset, scene, versions, selectedVersion: versions.find((version) => version.selected) ?? null } satisfies TimelineAsset;
           }));
         })),
       ]);
       const loadedLibraryAssets = sceneAssets.flat();
       const loadedAssets = loadedLibraryAssets.filter((item) => item.asset.asset_type === "VIDEO" || item.asset.asset_type === "AUDIO");
+      const versionAssetIds = new Map(loadedLibraryAssets.flatMap((item) => item.versions.map((version) => [version.id, item.asset.id] as const)));
       const candidates = getTimelineCandidates(scenes, loadedAssets);
       let effectiveClips = loadedClips;
       if (loadedClips.length === 0) {
         let populationPromise = autoPopulationPromises.current.get(loadedTimeline.id);
         if (!populationPromise) {
-          populationPromise = addMissingClips(loadedTimeline.id, loadedClips, candidates);
+          populationPromise = addMissingClips(loadedTimeline.id, loadedClips, candidates, versionAssetIds);
           autoPopulationPromises.current.set(loadedTimeline.id, populationPromise);
         }
         try {
@@ -216,7 +218,9 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
   }, [loadTimeline, selectedProject]);
 
   const selectedClip = clips.find((clip) => clip.id === selectedClipId) ?? null;
-  const selectedAsset = selectedClip ? assets.find((item) => item.asset.id === selectedClip.asset_id) ?? null : null;
+  const versionMedia = useMemo(() => new Map(libraryAssets.flatMap((item) => item.versions.map((version) => [version.id, { ...item, selectedVersion: version }] as const))), [libraryAssets]);
+  const versionAssetIds = useMemo(() => new Map([...versionMedia].map(([versionId, media]) => [versionId, media.asset.id])), [versionMedia]);
+  const selectedAsset = selectedClip ? versionMedia.get(selectedClip.asset_version_id) ?? null : null;
   const contextClip = contextMenu ? clips.find((clip) => clip.id === contextMenu.clipId) ?? null : null;
 
   useEffect(() => {
@@ -239,7 +243,10 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
   const timelineSeconds = Math.max(MIN_TIMELINE_SECONDS, Math.ceil(timelineContentDuration / 1000) + 2);
   const rulerMarks = useMemo(() => Array.from({ length: Math.floor(timelineSeconds / 5) + 1 }, (_, index) => index * 5), [timelineSeconds]);
   const timelineCandidates = useMemo(() => getTimelineCandidates(scenes, assets), [scenes, assets]);
-  const existingClipKeys = useMemo(() => new Set(clips.map((clip) => getClipKey(clip.asset_id, clip.track))), [clips]);
+  const existingClipKeys = useMemo(() => new Set(clips.map((clip) => {
+    const media = versionMedia.get(clip.asset_version_id);
+    return getClipKey(media?.asset.id ?? clip.asset_version_id, clip.track);
+  })), [clips, versionMedia]);
   const missingCandidates = timelineCandidates.filter((candidate) => !existingClipKeys.has(getClipKey(candidate.item.asset.id, candidate.track)));
   const filteredLibraryAssets = useMemo(() => libraryAssets.filter((item) => {
     const matchesType = mediaFilter === "ALL" || item.asset.asset_type === mediaFilter;
@@ -283,8 +290,9 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     setDraggedAssetId(null);
     setDropTarget(null);
     if (!timeline || !item?.selectedVersion || !placement?.valid || placement.track !== track || item.asset.asset_type !== track) return;
+    const assetVersionId = item.selectedVersion.id;
     void runAction("drop-media", async () => {
-      const created = await addClip(timeline.id, item.asset.id, track, placement.startTime, placement.duration);
+      const created = await addClip(timeline.id, assetVersionId, track, placement.startTime, placement.duration);
       await refreshClips(timeline.id);
       setSelectedClipId(created.id);
     });
@@ -399,7 +407,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
   const handleAddMissing = () => {
     if (!timeline || missingCandidates.length === 0) return;
     void runAction("add-missing", async () => {
-      await addMissingClips(timeline.id, clips, missingCandidates);
+      await addMissingClips(timeline.id, clips, missingCandidates, versionAssetIds);
       await refreshClips(timeline.id);
     });
   };
@@ -455,13 +463,13 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
   };
 
   const copyTimelineClip = (clip: TimelineClip) => {
-    setClipboard({ asset_id: clip.asset_id, track: clip.track, duration: clip.duration });
+    setClipboard({ asset_version_id: clip.asset_version_id, track: clip.track, duration: clip.duration });
   };
 
   const duplicateTimelineClip = (clip: TimelineClip) => {
     if (!timeline) return;
     void runAction("duplicate", async () => {
-      const created = await addClip(timeline.id, clip.asset_id, clip.track, clip.start_time + clip.duration, clip.duration);
+      const created = await addClip(timeline.id, clip.asset_version_id, clip.track, clip.start_time + clip.duration, clip.duration);
       await refreshClips(timeline.id);
       setSelectedClipId(created.id);
     });
@@ -472,7 +480,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
     const fallbackStart = selectedClip ? selectedClip.start_time + selectedClip.duration : 0;
     const startTime = playheadTime > 0 ? playheadTime : fallbackStart;
     void runAction("paste", async () => {
-      const created = await addClip(timeline.id, clipboard.asset_id, clipboard.track, startTime, clipboard.duration);
+      const created = await addClip(timeline.id, clipboard.asset_version_id, clipboard.track, startTime, clipboard.duration);
       await refreshClips(timeline.id);
       setSelectedClipId(created.id);
     });
@@ -666,7 +674,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
                     .filter((clip) => clip.track === track)
                     .sort((left, right) => left.start_time - right.start_time)
                     .map((clip) => {
-                      const metadata = assets.find((item) => item.asset.id === clip.asset_id);
+                      const metadata = versionMedia.get(clip.asset_version_id);
                       const isSelected = clip.id === selectedClipId;
                       const isInteracting = interaction?.clipId === clip.id;
                       return (
@@ -730,7 +738,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
                 <div><dt>Duration</dt><dd>{formatSeconds(selectedClip.duration)} sec</dd></div>
                 <div><dt>Version</dt><dd>{selectedAsset?.selectedVersion ? `v${selectedAsset.selectedVersion.version}` : "None"}</dd></div>
               </dl>
-              <small>Timeline stores asset ID; preview uses the currently selected version.</small>
+              <small>This clip is locked to this exact asset version.</small>
             </div>
             {!selectedAsset?.selectedVersion ? <p className="timeline-panel-warning">This asset has no selected version to preview.</p> : null}
             <form className="timeline-form" onSubmit={handleSaveTiming}>
@@ -764,7 +772,7 @@ export function TimelinePage({ selectedProject, onNavigate }: TimelinePageProps)
         <button role="menuitem" type="button" disabled={playheadTime <= contextClip.start_time || playheadTime >= contextClip.start_time + contextClip.duration} onClick={() => { setContextMenu(null); splitAtPlayhead(contextClip); }}>Split at playhead <kbd>Ctrl+B</kbd></button>
         <button className="danger" role="menuitem" type="button" onClick={() => { setContextMenu(null); deleteTimelineClip(contextClip); }}>Delete <kbd>Del</kbd></button>
       </div> : null}
-      <p className="timeline-limitation-note">Basic timeline only: synchronized preview and final rendering are not enabled yet. Current backend clips reference assets rather than fixed asset versions.</p>
+      <p className="timeline-limitation-note">Clips are locked to exact asset versions. Combined synchronized preview and Render/Export UI are not enabled yet.</p>
     </div>
   );
 }
