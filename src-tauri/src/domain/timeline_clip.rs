@@ -22,6 +22,8 @@ pub struct TimelineClip {
     pub start_time: u64,
     /// Duration in milliseconds.
     pub duration: u64,
+    /// Start offset in milliseconds inside the source media.
+    pub source_offset: u64,
 }
 
 impl TimelineClip {
@@ -45,7 +47,13 @@ impl TimelineClip {
             track,
             start_time,
             duration,
+            source_offset: 0,
         })
+    }
+
+    pub fn with_source_offset(mut self, source_offset: u64) -> Self {
+        self.source_offset = source_offset;
+        self
     }
 }
 
@@ -55,10 +63,17 @@ mod tests {
 
     #[test]
     fn creates_clip_on_video_track() {
-        let clip = TimelineClip::new(TimelineId::new(), AssetVersionId::new(), Track::Video, 0, 5000)
-            .expect("valid clip");
+        let clip = TimelineClip::new(
+            TimelineId::new(),
+            AssetVersionId::new(),
+            Track::Video,
+            0,
+            5000,
+        )
+        .expect("valid clip");
         assert_eq!(clip.track, Track::Video);
         assert_eq!(clip.start_time, 0);
+        assert_eq!(clip.source_offset, 0);
     }
 
     #[test]
@@ -70,8 +85,14 @@ mod tests {
 
     #[test]
     fn serializes_and_deserializes() {
-        let clip = TimelineClip::new(TimelineId::new(), AssetVersionId::new(), Track::Audio, 1000, 4000)
-            .expect("valid clip");
+        let clip = TimelineClip::new(
+            TimelineId::new(),
+            AssetVersionId::new(),
+            Track::Audio,
+            1000,
+            4000,
+        )
+        .expect("valid clip");
         let json = serde_json::to_string(&clip).expect("serialize");
         let back: TimelineClip = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(clip, back);

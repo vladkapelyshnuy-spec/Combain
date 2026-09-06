@@ -106,8 +106,15 @@ mod tests {
     #[test]
     fn execute_ffmpeg_captures_output() {
         // Test with a simple command that should succeed
-        let mut cmd = Command::new("echo");
-        cmd.arg("test output");
+        let cmd = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.arg("/C").arg("echo test output");
+            command
+        } else {
+            let mut command = Command::new("echo");
+            command.arg("test output");
+            command
+        };
 
         let output = execute_ffmpeg(cmd).expect("execute");
         assert_eq!(output.exit_code, 0);
@@ -117,8 +124,15 @@ mod tests {
     #[test]
     fn execute_ffmpeg_returns_error_on_failure() {
         // Test with a command that will fail
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("exit 1");
+        let cmd = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.arg("/C").arg("exit 1");
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg("exit 1");
+            command
+        };
 
         let error = execute_ffmpeg(cmd).expect_err("should fail");
         assert_eq!(error.code(), crate::error::ErrorCode::Provider);

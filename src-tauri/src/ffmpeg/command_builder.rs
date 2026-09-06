@@ -15,6 +15,8 @@ pub struct ClipTiming {
     pub start_ms: u64,
     /// Duration in milliseconds (how long the clip plays).
     pub duration_ms: u64,
+    /// Start offset in milliseconds inside the source file.
+    pub source_offset_ms: u64,
 }
 
 /// Configuration for FFmpeg render output.
@@ -76,7 +78,7 @@ pub fn build_render_command(
     }
 
     // Build filter complex with timing
-    let filter_complex = build_filter_complex(&config.video_clips, &config.audio_clips)?;
+    let filter_complex = build_filter_complex(config)?;
     cmd.arg("-filter_complex").arg(filter_complex);
 
     // Map outputs from filter
@@ -108,69 +110,109 @@ pub fn build_render_command(
     Ok(cmd)
 }
 
-/// Build filter_complex string for concatenating streams with timing.
+/// Build a global-timeline filter graph.
 ///
-/// For each video input, apply trim (to extract the desired duration) and setpts (to reset timestamps).
-/// Then concat all trimmed streams.
-///
-/// Example for 2 video clips:
-/// [0:v]trim=duration=5.5,setpts=PTS-STARTPTS[v0];
-/// [1:v]trim=duration=3.2,setpts=PTS-STARTPTS[v1];
-/// [v0][v1]concat=n=2:v=1:a=0[vout]
-///
-/// Same for audio with atrim and asetpts.
-fn build_filter_complex(
-    video_clips: &[ClipTiming],
-    audio_clips: &[ClipTiming],
-) -> Result<String, AppError> {
-    if video_clips.is_empty() {
+/// Video clips are ordered by timeline position and concatenated with generated
+/// black segments for gaps. VIDEO overlap is rejected because MVP compositing
+/// semantics are undefined. Audio clips are source-trimmed, delayed to their
+/// global start time, and mixed, so AUDIO overlap is supported.
+fn build_filter_complex(config: &RenderConfig) -> Result<String, AppError> {
+    if config.video_clips.is_empty() {
         return Err(AppError::invalid_input("no video clips for filter"));
     }
 
-    let mut filter = String::new();
-
-    // Video trim + concat filter
-    for (i, clip) in video_clips.iter().enumerate() {
-        let duration_sec = clip.duration_ms as f64 / 1000.0;
-        filter.push_str(&format!(
-            "[{}:v]trim=duration={:.3},setpts=PTS-STARTPTS[v{}]",
-            i, duration_sec, i
-        ));
-        if i < video_clips.len() - 1 || !audio_clips.is_empty() {
-            filter.push(';');
-        }
-    }
-
-    // Concat video streams
-    for i in 0..video_clips.len() {
-        filter.push_str(&format!("[v{}]", i));
-    }
-    filter.push_str(&format!("concat=n={}:v=1:a=0[vout]", video_clips.len()));
-
-    // Audio trim + concat filter (if we have audio)
-    if !audio_clips.is_empty() {
-        filter.push(';');
-
-        for (i, clip) in audio_clips.iter().enumerate() {
-            let duration_sec = clip.duration_ms as f64 / 1000.0;
-            let input_idx = video_clips.len() + i;
-            filter.push_str(&format!(
-                "[{}:a]atrim=duration={:.3},asetpts=PTS-STARTPTS[a{}]",
-                input_idx, duration_sec, i
+    let mut video_clips: Vec<_> = config.video_clips.iter().enumerate().collect();
+    video_clips.sort_by_key(|(_, clip)| clip.start_ms);
+    for pair in video_clips.windows(2) {
+        let (_, left) = pair[0];
+        let (_, right) = pair[1];
+        if right.start_ms < left.start_ms.saturating_add(left.duration_ms) {
+            return Err(AppError::invalid_input(
+                "overlapping VIDEO clips are not supported by the MVP renderer",
             ));
-            if i < audio_clips.len() - 1 {
-                filter.push(';');
-            }
         }
-
-        filter.push(';');
-        for i in 0..audio_clips.len() {
-            filter.push_str(&format!("[a{}]", i));
-        }
-        filter.push_str(&format!("concat=n={}:v=0:a=1[aout]", audio_clips.len()));
     }
 
-    Ok(filter)
+    let video_end = video_clips
+        .iter()
+        .map(|(_, clip)| clip.start_ms.saturating_add(clip.duration_ms))
+        .max()
+        .unwrap_or(0);
+    let audio_end = config
+        .audio_clips
+        .iter()
+        .map(|clip| clip.start_ms.saturating_add(clip.duration_ms))
+        .max()
+        .unwrap_or(0);
+    let timeline_end = video_end.max(audio_end);
+    let mut filters = Vec::new();
+    let mut video_segments = Vec::new();
+    let mut cursor = 0;
+    let mut gap_index = 0;
+
+    for (output_index, (input_index, clip)) in video_clips.iter().enumerate() {
+        if clip.start_ms > cursor {
+            let gap_duration = (clip.start_ms - cursor) as f64 / 1000.0;
+            let label = format!("vgap{gap_index}");
+            filters.push(format!(
+                "color=c=black:s={}x{}:r={}:d={gap_duration:.3}[{label}]",
+                config.width, config.height, config.fps
+            ));
+            video_segments.push(label);
+            gap_index += 1;
+        }
+
+        let source_start = clip.source_offset_ms as f64 / 1000.0;
+        let duration = clip.duration_ms as f64 / 1000.0;
+        let label = format!("v{output_index}");
+        filters.push(format!(
+            "[{input_index}:v]trim=start={source_start:.3}:duration={duration:.3},setpts=PTS-STARTPTS,scale={}:{},fps={},setsar=1[{label}]",
+            config.width, config.height, config.fps
+        ));
+        video_segments.push(label);
+        cursor = clip.start_ms.saturating_add(clip.duration_ms);
+    }
+
+    if timeline_end > cursor {
+        let gap_duration = (timeline_end - cursor) as f64 / 1000.0;
+        let label = format!("vgap{gap_index}");
+        filters.push(format!(
+            "color=c=black:s={}x{}:r={}:d={gap_duration:.3}[{label}]",
+            config.width, config.height, config.fps
+        ));
+        video_segments.push(label);
+    }
+
+    let video_inputs = video_segments
+        .iter()
+        .map(|label| format!("[{label}]"))
+        .collect::<String>();
+    filters.push(format!(
+        "{video_inputs}concat=n={}:v=1:a=0[vout]",
+        video_segments.len()
+    ));
+
+    if !config.audio_clips.is_empty() {
+        for (audio_index, clip) in config.audio_clips.iter().enumerate() {
+            let input_index = config.video_clips.len() + audio_index;
+            let source_start = clip.source_offset_ms as f64 / 1000.0;
+            let duration = clip.duration_ms as f64 / 1000.0;
+            filters.push(format!(
+                "[{input_index}:a]atrim=start={source_start:.3}:duration={duration:.3},asetpts=PTS-STARTPTS,adelay={}:all=1[a{audio_index}]",
+                clip.start_ms
+            ));
+        }
+        let audio_inputs = (0..config.audio_clips.len())
+            .map(|index| format!("[a{index}]"))
+            .collect::<String>();
+        filters.push(format!(
+            "{audio_inputs}amix=inputs={}:duration=longest:dropout_transition=0,apad=whole_dur={:.3}[aout]",
+            config.audio_clips.len(),
+            timeline_end as f64 / 1000.0
+        ));
+    }
+
+    Ok(filters.join(";"))
 }
 
 #[cfg(test)]
@@ -183,10 +225,16 @@ mod tests {
             file_path: PathBuf::from("/tmp/video1.mp4"),
             start_ms: 0,
             duration_ms: 5500,
+            source_offset_ms: 0,
         }];
-        let filter = build_filter_complex(&clips, &[]).expect("single video");
-        assert!(filter.contains("[0:v]trim=duration=5.500"));
-        assert!(filter.contains("setpts=PTS-STARTPTS[v0]"));
+        let filter = build_filter_complex(&RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            clips,
+            vec![],
+        ))
+        .expect("single video");
+        assert!(filter.contains("[0:v]trim=start=0.000:duration=5.500"));
+        assert!(filter.contains("setpts=PTS-STARTPTS,scale="));
         assert!(filter.contains("[v0]concat=n=1:v=1:a=0[vout]"));
     }
 
@@ -197,16 +245,23 @@ mod tests {
                 file_path: PathBuf::from("/tmp/video1.mp4"),
                 start_ms: 0,
                 duration_ms: 5000,
+                source_offset_ms: 0,
             },
             ClipTiming {
                 file_path: PathBuf::from("/tmp/video2.mp4"),
                 start_ms: 5000,
                 duration_ms: 3000,
+                source_offset_ms: 0,
             },
         ];
-        let filter = build_filter_complex(&clips, &[]).expect("multiple videos");
-        assert!(filter.contains("[0:v]trim=duration=5.000"));
-        assert!(filter.contains("[1:v]trim=duration=3.000"));
+        let filter = build_filter_complex(&RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            clips,
+            vec![],
+        ))
+        .expect("multiple videos");
+        assert!(filter.contains("[0:v]trim=start=0.000:duration=5.000"));
+        assert!(filter.contains("[1:v]trim=start=0.000:duration=3.000"));
         assert!(filter.contains("[v0][v1]concat=n=2:v=1:a=0[vout]"));
     }
 
@@ -217,11 +272,13 @@ mod tests {
                 file_path: PathBuf::from("/tmp/video1.mp4"),
                 start_ms: 0,
                 duration_ms: 5000,
+                source_offset_ms: 0,
             },
             ClipTiming {
                 file_path: PathBuf::from("/tmp/video2.mp4"),
                 start_ms: 5000,
                 duration_ms: 3000,
+                source_offset_ms: 0,
             },
         ];
         let audio_clips = vec![
@@ -229,25 +286,130 @@ mod tests {
                 file_path: PathBuf::from("/tmp/audio1.mp3"),
                 start_ms: 0,
                 duration_ms: 5000,
+                source_offset_ms: 0,
             },
             ClipTiming {
                 file_path: PathBuf::from("/tmp/audio2.mp3"),
                 start_ms: 5000,
                 duration_ms: 3000,
+                source_offset_ms: 0,
             },
         ];
-        let filter = build_filter_complex(&video_clips, &audio_clips).expect("video and audio");
-        assert!(filter.contains("[0:v]trim=duration=5.000"));
-        assert!(filter.contains("[1:v]trim=duration=3.000"));
-        assert!(filter.contains("[2:a]atrim=duration=5.000"));
-        assert!(filter.contains("[3:a]atrim=duration=3.000"));
+        let filter = build_filter_complex(&RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            video_clips,
+            audio_clips,
+        ))
+        .expect("video and audio");
+        assert!(filter.contains("[0:v]trim=start=0.000:duration=5.000"));
+        assert!(filter.contains("[1:v]trim=start=0.000:duration=3.000"));
+        assert!(filter.contains("[2:a]atrim=start=0.000:duration=5.000"));
+        assert!(filter.contains("[3:a]atrim=start=0.000:duration=3.000"));
         assert!(filter.contains("[v0][v1]concat=n=2:v=1:a=0[vout]"));
-        assert!(filter.contains("[a0][a1]concat=n=2:v=0:a=1[aout]"));
+        assert!(filter.contains("[a0][a1]amix=inputs=2"));
+    }
+
+    #[test]
+    fn preserves_video_gap_and_global_duration() {
+        let config = RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            vec![
+                ClipTiming {
+                    file_path: PathBuf::from("/tmp/a.mp4"),
+                    start_ms: 0,
+                    duration_ms: 5000,
+                    source_offset_ms: 0,
+                },
+                ClipTiming {
+                    file_path: PathBuf::from("/tmp/b.mp4"),
+                    start_ms: 10000,
+                    duration_ms: 5000,
+                    source_offset_ms: 0,
+                },
+            ],
+            vec![],
+        );
+        let filter = build_filter_complex(&config).expect("gap timeline");
+        assert!(filter.contains("color=c=black:s=1920x1080:r=30:d=5.000[vgap0]"));
+        assert!(filter.contains("[v0][vgap0][v1]concat=n=3:v=1:a=0[vout]"));
+    }
+
+    #[test]
+    fn delays_audio_to_global_start_time() {
+        let config = RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            vec![ClipTiming {
+                file_path: PathBuf::from("/tmp/video.mp4"),
+                start_ms: 0,
+                duration_ms: 10000,
+                source_offset_ms: 0,
+            }],
+            vec![ClipTiming {
+                file_path: PathBuf::from("/tmp/audio.mp3"),
+                start_ms: 7000,
+                duration_ms: 3000,
+                source_offset_ms: 0,
+            }],
+        );
+        let filter = build_filter_complex(&config).expect("delayed audio");
+        assert!(filter.contains("adelay=7000:all=1[a0]"));
+        assert!(filter.contains("amix=inputs=1:duration=longest"));
+    }
+
+    #[test]
+    fn trims_from_source_offset() {
+        let config = RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            vec![ClipTiming {
+                file_path: PathBuf::from("/tmp/video.mp4"),
+                start_ms: 0,
+                duration_ms: 3000,
+                source_offset_ms: 4000,
+            }],
+            vec![ClipTiming {
+                file_path: PathBuf::from("/tmp/audio.mp3"),
+                start_ms: 0,
+                duration_ms: 3000,
+                source_offset_ms: 4000,
+            }],
+        );
+        let filter = build_filter_complex(&config).expect("source offset");
+        assert!(filter.contains("[0:v]trim=start=4.000:duration=3.000"));
+        assert!(filter.contains("[1:a]atrim=start=4.000:duration=3.000"));
+    }
+
+    #[test]
+    fn rejects_overlapping_video_clips() {
+        let config = RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            vec![
+                ClipTiming {
+                    file_path: PathBuf::from("/tmp/a.mp4"),
+                    start_ms: 0,
+                    duration_ms: 5000,
+                    source_offset_ms: 0,
+                },
+                ClipTiming {
+                    file_path: PathBuf::from("/tmp/b.mp4"),
+                    start_ms: 4000,
+                    duration_ms: 5000,
+                    source_offset_ms: 0,
+                },
+            ],
+            vec![],
+        );
+        let error = build_filter_complex(&config).expect_err("video overlap");
+        assert!(error.to_string().contains("overlapping VIDEO clips"));
     }
 
     #[test]
     fn rejects_zero_video_inputs() {
-        let error = build_filter_complex(&[], &[]).expect_err("zero videos");
+        let error = build_filter_complex(&RenderConfig::new(
+            PathBuf::from("/tmp/out.mp4"),
+            vec![],
+            vec![],
+        ))
+        .expect_err("zero videos");
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
     }
 
@@ -260,17 +422,20 @@ mod tests {
                     file_path: PathBuf::from("/tmp/video1.mp4"),
                     start_ms: 0,
                     duration_ms: 5000,
+                    source_offset_ms: 0,
                 },
                 ClipTiming {
                     file_path: PathBuf::from("/tmp/video2.mp4"),
                     start_ms: 5000,
                     duration_ms: 3000,
+                    source_offset_ms: 0,
                 },
             ],
             vec![ClipTiming {
                 file_path: PathBuf::from("/tmp/audio1.mp3"),
                 start_ms: 0,
                 duration_ms: 8000,
+                source_offset_ms: 0,
             }],
         );
 
@@ -304,6 +469,7 @@ mod tests {
                 file_path: PathBuf::from("/tmp/video1.mp4"),
                 start_ms: 0,
                 duration_ms: 5000,
+                source_offset_ms: 0,
             }],
             vec![], // No audio
         );

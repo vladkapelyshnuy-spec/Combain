@@ -36,6 +36,10 @@ const MIGRATIONS: &[Migration] = &[
         id: "0006_timeline_render_fixes",
         sql: include_str!("../../migrations/0006_timeline_render_fixes.sql"),
     },
+    Migration {
+        id: "0007_timeline_source_offset",
+        sql: include_str!("../../migrations/0007_timeline_source_offset.sql"),
+    },
 ];
 
 pub fn run(conn: &Connection) -> Result<(), AppError> {
@@ -103,6 +107,15 @@ mod tests {
         ] {
             assert!(table_exists(table), "missing table {table}");
         }
+
+        let source_offset_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('timeline_clips') WHERE name = 'source_offset')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query source_offset column");
+        assert!(source_offset_exists);
     }
 
     #[test]
