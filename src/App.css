@@ -775,6 +775,7 @@ h2 {
   background: rgb(255 255 255 / 1.5%);
 }
 .storyboard-video-section .storyboard-media-heading { color: #77c7d5; }
+.storyboard-audio-section .storyboard-media-heading { color: #d7a6ff; }
 .storyboard-media-heading-row {
   padding-right: 20px;
   display: flex;
@@ -796,6 +797,7 @@ h2 {
 .video-status-running { border-color: rgb(119 199 213 / 35%); color: #77c7d5; background: rgb(119 199 213 / 8%); }
 .video-status-completed { border-color: rgb(101 197 139 / 30%); color: #83d5a3; background: rgb(101 197 139 / 8%); }
 .video-status-failed { border-color: rgb(255 123 131 / 30%); color: var(--color-danger); background: rgb(255 123 131 / 8%); }
+.audio-generation-status { color: #d7a6ff; font-size: 0.66rem; font-weight: 700; }
 .storyboard-card-header {
   padding: 20px 20px 16px;
   display: flex;
@@ -883,6 +885,12 @@ h2 {
 }
 .storyboard-video-placeholder strong { color: var(--color-text-muted); font-size: 0.82rem; }
 .storyboard-video-placeholder > span:last-child { font-size: 0.7rem; }
+.storyboard-audio-preview { position: relative; min-height: 96px; padding: 18px 20px; display: grid; align-items: center; border-block: 1px solid var(--color-border-soft); background: linear-gradient(135deg, rgb(143 124 246 / 7%), transparent 60%), #0d1016; }
+.storyboard-audio-preview audio { width: 100%; min-width: 0; }
+.storyboard-audio-placeholder { display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--color-text-subtle); text-align: left; }
+.storyboard-audio-placeholder > div { min-width: 0; display: grid; gap: 4px; }
+.storyboard-audio-placeholder strong { color: var(--color-text-muted); font-size: 0.78rem; }
+.storyboard-audio-placeholder span { overflow-wrap: anywhere; font-size: 0.68rem; }
 .storyboard-generation-overlay {
   position: absolute;
   inset: 0;
@@ -1354,6 +1362,7 @@ h2 {
   .storyboard-card-header { padding: 17px 17px 14px; }
   .storyboard-media-heading { padding-inline: 17px; }
   .storyboard-media-heading-row { padding-right: 17px; }
+  .storyboard-audio-preview { padding-inline: 17px; }
   .storyboard-narration { padding: 16px 17px; }
   .storyboard-prompts { padding: 0 17px 16px; }
   .storyboard-image-controls { padding: 14px 17px; align-items: stretch; flex-direction: column; }

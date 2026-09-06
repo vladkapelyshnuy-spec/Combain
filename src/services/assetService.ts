@@ -14,6 +14,10 @@ export function generateVideo(
   return invoke<AssetVersion>("generate_video", { sceneId, prompt, useImageToVideo });
 }
 
+export function generateTts(sceneId: SceneId, voice: string | null = null): Promise<AssetVersion> {
+  return invoke<AssetVersion>("generate_tts", { sceneId, voice });
+}
+
 export function getAssets(sceneId: SceneId): Promise<Asset[]> {
   return invoke<Asset[]>("get_assets", { sceneId });
 }
