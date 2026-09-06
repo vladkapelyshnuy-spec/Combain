@@ -204,14 +204,26 @@ fn golden_path_creates_project_to_validated_timeline() -> Result<(), AppError> {
             .find(|a| a.asset_type == AssetType::Audio)
             .expect("audio asset");
 
+        // Get selected versions for the assets
+        let video_versions = asset_version_repository::list_by_asset(&conn, video_asset.id)?;
+        let video_version = video_versions
+            .iter()
+            .find(|v| v.selected)
+            .expect("video asset should have selected version");
+        let audio_versions = asset_version_repository::list_by_asset(&conn, audio_asset.id)?;
+        let audio_version = audio_versions
+            .iter()
+            .find(|v| v.selected)
+            .expect("audio asset should have selected version");
+
         // Add video clip (5 seconds)
         let video_clip =
-            TimelineClip::new(timeline.id, video_asset.id, Track::Video, current_time, 5000)?;
+            TimelineClip::new(timeline.id, video_version.id, Track::Video, current_time, 5000)?;
         timeline_clip_repository::insert(&conn, &video_clip)?;
 
         // Add audio clip (5 seconds, synchronized)
         let audio_clip =
-            TimelineClip::new(timeline.id, audio_asset.id, Track::Audio, current_time, 5000)?;
+            TimelineClip::new(timeline.id, audio_version.id, Track::Audio, current_time, 5000)?;
         timeline_clip_repository::insert(&conn, &audio_clip)?;
 
         current_time += 5000; // Next scene starts 5 seconds later
@@ -224,11 +236,11 @@ fn golden_path_creates_project_to_validated_timeline() -> Result<(), AppError> {
     let clips = timeline_validation::validate_timeline_has_clips(&conn, timeline.id)?;
     assert_eq!(clips.len(), 6); // 3 scenes × 2 clips (video + audio)
 
-    // Validate all clips have valid assets
-    timeline_validation::validate_all_clips_have_assets(&conn, timeline.id)?;
+    // Validate all clips have valid asset versions
+    timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id)?;
 
-    // Validate all clip assets have selected versions
-    timeline_validation::validate_all_clip_assets_have_selected_versions(&conn, timeline.id)?;
+    // Validate all clip asset files exist
+    timeline_validation::validate_all_clip_asset_files_exist(&conn, timeline.id)?;
 
     // Comprehensive validation: timeline ready for render
     let ready_timeline =
@@ -278,12 +290,8 @@ fn golden_path_creates_project_to_validated_timeline() -> Result<(), AppError> {
     // Timeline validation
     assert!(timeline_validation::validate_timeline_exists(&conn, project.id).is_ok());
     assert!(timeline_validation::validate_timeline_has_clips(&conn, timeline.id).is_ok());
-    assert!(timeline_validation::validate_all_clips_have_assets(&conn, timeline.id).is_ok());
-    assert!(timeline_validation::validate_all_clip_assets_have_selected_versions(
-        &conn,
-        timeline.id
-    )
-    .is_ok());
+    assert!(timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id).is_ok());
+    assert!(timeline_validation::validate_all_clip_asset_files_exist(&conn, timeline.id).is_ok());
     assert!(
         timeline_validation::validate_timeline_ready_for_render(&conn, project.id).is_ok()
     );
