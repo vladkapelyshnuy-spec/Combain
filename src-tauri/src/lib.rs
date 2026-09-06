@@ -1,15 +1,16 @@
-mod commands;
-mod config;
-mod db;
-mod domain;
-mod error;
-mod ffmpeg;
-mod logging;
-mod paths;
-mod provider;
-mod repository;
-mod secrets;
-mod storage;
+pub mod commands;
+pub mod config;
+pub mod db;
+pub mod domain;
+pub mod error;
+pub mod ffmpeg;
+pub mod logging;
+pub mod paths;
+pub mod provider;
+pub mod repository;
+pub mod secrets;
+pub mod storage;
+pub mod validation;
 
 use config::AppConfig;
 use db::Database;
