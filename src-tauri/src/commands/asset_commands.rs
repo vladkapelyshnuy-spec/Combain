@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use rusqlite::Connection;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::db::Database;
 use crate::domain::asset::{Asset, AssetType};
@@ -635,6 +635,7 @@ fn find_audio_asset(conn: &Connection, scene_id: SceneId) -> Result<Option<Asset
 /// under a plain `Connection`/`TTSProvider` (including a mock) in tests.
 pub async fn generate_tts_impl(
     db: &Database,
+    app: Option<&AppHandle>,
     provider: &(dyn TTSProvider + Send + Sync),
     data_root: &Path,
     scene_id: SceneId,
@@ -705,7 +706,8 @@ pub async fn generate_tts_impl(
         );
 
         storage::save_new_file(&file_path, &generated.bytes)?;
-        let duration_ms = audio_utils::extract_audio_duration_ms(&file_path, &narration).await?;
+        let duration_ms =
+            audio_utils::extract_audio_duration_ms(app, &file_path, &narration).await?;
         tracing::info!(
             "TTS audio duration: {}ms (extracted from file)",
             duration_ms
@@ -775,6 +777,7 @@ pub async fn generate_tts_impl(
 /// deletes a previous version.
 #[tauri::command]
 pub async fn generate_tts(
+    app: AppHandle,
     db: State<'_, Database>,
     scene_id: SceneId,
     voice: Option<String>,
@@ -792,7 +795,7 @@ pub async fn generate_tts(
                 "ElevenLabs TTS provider resolved for request"
             );
             let provider = ElevenLabsTtsProvider::new(config);
-            generate_tts_impl(&db, &provider, &data_root, scene_id, voice).await
+            generate_tts_impl(&db, Some(&app), &provider, &data_root, scene_id, voice).await
         }
         ResolvedTtsProvider::OpenAI { profile_id, config } => {
             tracing::debug!(
@@ -803,7 +806,7 @@ pub async fn generate_tts(
                 "OpenAI TTS provider resolved for request"
             );
             let provider = OpenAiTtsProvider::new(config);
-            generate_tts_impl(&db, &provider, &data_root, scene_id, voice).await
+            generate_tts_impl(&db, Some(&app), &provider, &data_root, scene_id, voice).await
         }
     }
 }
@@ -1439,7 +1442,7 @@ mod tests {
         let scene_id = seed_scene(&db, "a nebula");
         let provider = tts_provider(MP3_BYTES);
 
-        let version = generate_tts_impl(&db, &provider, data_root.path(), scene_id, None)
+        let version = generate_tts_impl(&db, None, &provider, data_root.path(), scene_id, None)
             .await
             .expect("generate");
 
@@ -1468,6 +1471,7 @@ mod tests {
 
         let first = generate_tts_impl(
             &db,
+            None,
             &tts_provider(MP3_BYTES),
             data_root.path(),
             scene_id,
@@ -1478,6 +1482,7 @@ mod tests {
 
         let second = generate_tts_impl(
             &db,
+            None,
             &tts_provider(MP3_BYTES),
             data_root.path(),
             scene_id,
@@ -1504,6 +1509,7 @@ mod tests {
 
         let error = generate_tts_impl(
             &db,
+            None,
             &tts_provider(MP3_BYTES),
             data_root.path(),
             SceneId::new(),
@@ -1535,6 +1541,7 @@ mod tests {
 
         let error = generate_tts_impl(
             &db,
+            None,
             &tts_provider(MP3_BYTES),
             data_root.path(),
             scene.id,
@@ -1552,7 +1559,7 @@ mod tests {
         let scene_id = seed_scene(&db, "a nebula");
         let provider = MockTtsProvider::with_error("provider unavailable");
 
-        let error = generate_tts_impl(&db, &provider, data_root.path(), scene_id, None)
+        let error = generate_tts_impl(&db, None, &provider, data_root.path(), scene_id, None)
             .await
             .expect_err("provider failure");
         assert_eq!(error.code(), crate::error::ErrorCode::Provider);
@@ -1574,7 +1581,7 @@ mod tests {
         let scene_id = seed_scene(&db, "a nebula");
         let provider = tts_provider(b"not an audio file");
 
-        let error = generate_tts_impl(&db, &provider, data_root.path(), scene_id, None)
+        let error = generate_tts_impl(&db, None, &provider, data_root.path(), scene_id, None)
             .await
             .expect_err("invalid mp3");
         assert_eq!(error.code(), crate::error::ErrorCode::Provider);

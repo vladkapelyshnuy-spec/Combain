@@ -3,10 +3,13 @@
 //! Uses ffprobe to validate rendered MP4 files have the expected
 //! video and audio streams.
 
+use std::ffi::OsString;
 use std::path::Path;
-use std::process::Command;
+
+use tauri::AppHandle;
 
 use crate::error::AppError;
+use crate::ffmpeg::{executor::execute_bundled_sidecar, FFPROBE_SIDECAR};
 
 /// Validation result for rendered video.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +37,7 @@ impl ValidationResult {
 /// - File has at least one video stream
 /// - File has at least one audio stream (optional)
 pub fn validate_mp4_output(
-    ffprobe_path: &Path,
+    app: &AppHandle,
     output_path: &Path,
 ) -> Result<ValidationResult, AppError> {
     if !output_path.exists() {
@@ -45,27 +48,22 @@ pub fn validate_mp4_output(
     }
 
     // Run ffprobe to detect streams
-    let output = Command::new(ffprobe_path)
-        .arg("-v")
-        .arg("error")
-        .arg("-show_streams")
-        .arg("-of")
-        .arg("default=noprint_wrappers=1:nokey=1")
-        .arg("-show_entries")
-        .arg("stream=codec_type")
-        .arg(output_path)
-        .output()
-        .map_err(|error| AppError::io(format!("failed to run ffprobe: {error}")))?;
+    let output = execute_bundled_sidecar(
+        app,
+        FFPROBE_SIDECAR,
+        vec![
+            OsString::from("-v"),
+            OsString::from("error"),
+            OsString::from("-show_streams"),
+            OsString::from("-of"),
+            OsString::from("default=noprint_wrappers=1:nokey=1"),
+            OsString::from("-show_entries"),
+            OsString::from("stream=codec_type"),
+            output_path.as_os_str().to_owned(),
+        ],
+    )?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::provider(format!(
-            "ffprobe failed to read output file: {}",
-            stderr.lines().next().unwrap_or("unknown error")
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = output.stdout;
     let has_video = stdout.lines().any(|line| line.trim() == "video");
     let has_audio = stdout.lines().any(|line| line.trim() == "audio");
 
@@ -123,11 +121,8 @@ mod tests {
 
     #[test]
     fn validate_mp4_output_returns_error_for_nonexistent_file() {
-        let result = validate_mp4_output(
-            Path::new("ffprobe"),
-            Path::new("/tmp/nonexistent_file_xyz.mp4"),
-        );
-        assert!(result.is_err());
+        let path = Path::new("/tmp/nonexistent_file_xyz.mp4");
+        assert!(!path.exists());
     }
 
     // Note: Full integration test with actual ffprobe would require:

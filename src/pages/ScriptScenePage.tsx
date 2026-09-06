@@ -203,7 +203,7 @@ export function ScriptScenePage({ currentPath, onNavigate, selectedProject }: Sc
         <header className="workspace-header">
           <div className="workspace-heading">
             <span className="workspace-heading-icon" aria-hidden="true"><SectionIcon name={currentPath === "/script" ? "script" : "scenes"} /></span>
-            <div><p className="eyebrow">Phase 4 workspace</p><h1>{currentPath === "/script" ? "Script" : "Scenes"}</h1><p className="lead">Select a project before editing its script and scenes.</p></div>
+            <div><p className="eyebrow">Phase 4 workspace</p><h1>{currentPath === "/script" ? "Script" : "Scenes"}</h1><p className="lead">Select a project before {currentPath === "/script" ? "generating its script" : "editing its scenes"}.</p></div>
           </div>
         </header>
         <div className="scene-empty"><h2>No project selected</h2><p>Open an existing project or create a new one to continue.</p><Button onClick={() => onNavigate("/projects")}>Choose project</Button></div>
@@ -216,12 +216,12 @@ export function ScriptScenePage({ currentPath, onNavigate, selectedProject }: Sc
       <header className="workspace-header">
         <div className="workspace-heading">
           <span className="workspace-heading-icon" aria-hidden="true"><SectionIcon name={currentPath === "/script" ? "script" : "scenes"} /></span>
-          <div><p className="eyebrow">{selectedProject.name}</p><h1>{currentPath === "/script" ? "Script Editor" : "Scene Editor"}</h1><p className="lead">Generate a structured script, then refine each scene for production.</p></div>
+          <div><p className="eyebrow">{selectedProject.name}</p><h1>{currentPath === "/script" ? "Script" : "Scenes"}</h1><p className="lead">{currentPath === "/script" ? "Generate the overall story and review its scene outline." : "Edit, add, delete, and reorder individual scenes."}</p></div>
         </div>
         <span className="project-count" aria-live="polite">{scenes.length} {scenes.length === 1 ? "scene" : "scenes"}</span>
       </header>
 
-      <section className="script-generator" aria-labelledby="script-generator-title">
+      {currentPath === "/script" ? <section className="script-generator" aria-labelledby="script-generator-title">
         <div className="script-generator-heading"><div><p className="eyebrow">AI Director</p><h2 id="script-generator-title">Generate structured script</h2></div>{scriptTitle ? <span className="selected-badge">{scriptTitle}</span> : null}</div>
         <form className="generation-form" onSubmit={handleGenerate}>
           <label>Topic<input value={generation.topic} onChange={(event) => { const inputValue = event.currentTarget.value; setGeneration((value) => ({ ...value, topic: inputValue })); }} disabled={Boolean(activeAction) || scenes.length > 0} required /></label>
@@ -231,13 +231,20 @@ export function ScriptScenePage({ currentPath, onNavigate, selectedProject }: Sc
           <Button type="submit" disabled={Boolean(activeAction) || scenes.length > 0}>{activeAction === "generate" ? "Generating script…" : "Generate script"}</Button>
         </form>
         {scenes.length > 0 ? <p className="form-note">Script generation is available only before scenes are created. Existing scenes are never overwritten.</p> : null}
-      </section>
+      </section> : null}
 
       {actionError ? <div className="form-error page-action-error" role="alert">{actionError}</div> : null}
       {isLoading ? <LoadingState title="Loading scenes" description="Reading the selected project's script from local storage." /> : null}
       {!isLoading && loadError ? <ErrorState title="Could not load scenes" description={loadError} onRetry={() => void loadScenes()} /> : null}
 
-      {!isLoading && !loadError ? (
+      {!isLoading && !loadError && currentPath === "/script" ? (
+        <section className="script-overview" aria-labelledby="script-overview-title">
+          <div className="script-generator-heading"><div><p className="eyebrow">Script overview</p><h2 id="script-overview-title">{scriptTitle ?? (scenes.length ? "Generated story" : "No script yet")}</h2></div>{scenes.length ? <span className="selected-badge">{scenes.reduce((total, scene) => total + scene.duration, 0)} sec total</span> : null}</div>
+          {scenes.length ? <ol className="script-outline">{scenes.map((scene, index) => <li key={scene.id}><span>{String(index + 1).padStart(2, "0")}</span><div><h3>{scene.title}</h3><p>{scene.narration || "No narration yet."}</p><small>{scene.duration}s · {scene.status.toLowerCase()}</small></div></li>)}</ol> : <div className="scene-list-empty"><p>Use AI Director above to generate the structured script and scene outline.</p></div>}
+        </section>
+      ) : null}
+
+      {!isLoading && !loadError && currentPath === "/scenes" ? (
         <div className="scene-editor-layout">
           <aside className="scene-list-panel" aria-labelledby="scene-list-title">
             <div className="scene-panel-heading"><div><p className="eyebrow">Sequence</p><h2 id="scene-list-title">Scenes</h2></div><Button variant="secondary" onClick={() => void loadScenes()} disabled={Boolean(activeAction)}>Refresh</Button></div>

@@ -27,8 +27,6 @@ export function SectionIcon({ name, ...props }: SectionIconProps) {
       return <svg {...commonProps}><rect x="3.75" y="4.5" width="16.5" height="15" rx="1.5" /><circle cx="8.25" cy="9" r="1.5" /><path d="m5.25 17.25 4.5-4.5 3 3 2.25-2.25 3.75 3.75" /></svg>;
     case "timeline":
       return <svg {...commonProps}><path d="M3.75 6.75h16.5M3.75 17.25h16.5M7.5 3.75v6M15 14.25v6" /><rect x="7.5" y="4.5" width="7.5" height="4.5" rx="1" /><rect x="7.5" y="15" width="7.5" height="4.5" rx="1" /></svg>;
-    case "export":
-      return <svg {...commonProps}><path d="M12 15V3.75M7.5 8.25 12 3.75l4.5 4.5M4.5 13.5v6.75h15V13.5" /></svg>;
     case "settings":
       return <svg {...commonProps}><circle cx="12" cy="12" r="3" /><path d="M19.2 13.5a7.7 7.7 0 0 0 0-3l2-1.55-2-3.45-2.45 1a7.8 7.8 0 0 0-2.6-1.5L13.8 2.4h-4L9.45 5a7.8 7.8 0 0 0-2.6 1.5l-2.45-1-2 3.45 2 1.55a7.7 7.7 0 0 0 0 3l-2 1.55 2 3.45 2.45-1a7.8 7.8 0 0 0 2.6 1.5l.35 2.6h4l.35-2.6a7.8 7.8 0 0 0 2.6-1.5l2.45 1 2-3.45-2-1.55Z" /></svg>;
   }
