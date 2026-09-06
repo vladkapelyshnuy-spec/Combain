@@ -21,9 +21,10 @@ use crate::provider::image_provider::ImageRequest;
 use crate::provider::tts_provider::TTSRequest;
 use crate::provider::video_provider::VideoRequest;
 use crate::provider::{
-    ImageProvider, OpenAiImageConfig, OpenAiImageProvider, OpenAiTtsConfig, OpenAiTtsProvider,
-    OpenAiVideoConfig, OpenAiVideoProvider, RoyalTechnoConfig, RoyalTechnoVideoProvider,
-    TTSProvider, VideoProvider, VideoStatus,
+    ElevenLabsConfig, ElevenLabsTtsProvider, ImageProvider, OpenAiImageConfig,
+    OpenAiImageProvider, OpenAiTtsConfig, OpenAiTtsProvider, OpenAiVideoConfig,
+    OpenAiVideoProvider, RoyalTechnoConfig, RoyalTechnoVideoProvider, TTSProvider, VideoProvider,
+    VideoStatus,
 };
 use crate::repository::{
     asset_repository, asset_version_repository, provider_profile_repository, scene_repository,
@@ -511,15 +512,21 @@ pub async fn generate_video(
 // ────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-struct ResolvedTtsConfig {
-    profile_id: ProviderProfileId,
-    config: OpenAiTtsConfig,
+enum ResolvedTtsProvider {
+    OpenAI {
+        profile_id: ProviderProfileId,
+        config: OpenAiTtsConfig,
+    },
+    ElevenLabs {
+        profile_id: ProviderProfileId,
+        config: ElevenLabsConfig,
+    },
 }
 
 /// Resolve the active TTS provider at request time. Provider profiles and
 /// credentials can change while the application is running, so this must not
 /// be cached in Tauri managed state.
-fn resolve_tts_config(db: &Database) -> Result<ResolvedTtsConfig, AppError> {
+fn resolve_tts_provider(db: &Database) -> Result<ResolvedTtsProvider, AppError> {
     let profile =
         provider_profile_repository::get_default_by_purpose(&db.conn(), ProviderPurpose::Tts)?
             .ok_or_else(|| {
@@ -534,10 +541,20 @@ fn resolve_tts_config(db: &Database) -> Result<ResolvedTtsConfig, AppError> {
             )
         })?;
 
-    Ok(ResolvedTtsConfig {
-        profile_id: profile.id,
-        config: OpenAiTtsConfig::from_profile(&profile, Some(api_key)),
-    })
+    // Route based on provider
+    match profile.provider.as_str() {
+        "elevenlabs" => Ok(ResolvedTtsProvider::ElevenLabs {
+            profile_id: profile.id,
+            config: ElevenLabsConfig::from_profile(&profile, Some(api_key)),
+        }),
+        "openai" => Ok(ResolvedTtsProvider::OpenAI {
+            profile_id: profile.id,
+            config: OpenAiTtsConfig::from_profile(&profile, Some(api_key)),
+        }),
+        unknown => Err(AppError::config(format!(
+            "unknown TTS provider: {unknown} (supported: openai, elevenlabs)"
+        ))),
+    }
 }
 
 /// Find this scene's existing audio asset, if any. A scene has at most one
@@ -674,16 +691,38 @@ pub async fn generate_tts(
     voice: Option<String>,
 ) -> Result<AssetVersion, AppError> {
     let data_root = paths::portable_data_dir()?;
-    let config = resolve_tts_config(&db)?;
-    tracing::debug!(
-        profile_id = %config.profile_id,
-        base_url = %config.config.base_url,
-        model = %config.config.model,
-        default_voice = %config.config.default_voice,
-        "TTS provider resolved for request"
-    );
-    let provider = OpenAiTtsProvider::new(config.config);
-    generate_tts_impl(&db, &provider, &data_root, scene_id, voice).await
+    let resolved = resolve_tts_provider(&db)?;
+
+    match resolved {
+        ResolvedTtsProvider::ElevenLabs {
+            profile_id,
+            config,
+        } => {
+            tracing::debug!(
+                profile_id = %profile_id,
+                base_url = %config.base_url,
+                model = %config.model,
+                default_voice = %config.default_voice,
+                "ElevenLabs TTS provider resolved for request"
+            );
+            let provider = ElevenLabsTtsProvider::new(config);
+            generate_tts_impl(&db, &provider, &data_root, scene_id, voice).await
+        }
+        ResolvedTtsProvider::OpenAI {
+            profile_id,
+            config,
+        } => {
+            tracing::debug!(
+                profile_id = %profile_id,
+                base_url = %config.base_url,
+                model = %config.model,
+                default_voice = %config.default_voice,
+                "OpenAI TTS provider resolved for request"
+            );
+            let provider = OpenAiTtsProvider::new(config);
+            generate_tts_impl(&db, &provider, &data_root, scene_id, voice).await
+        }
+    }
 }
 
 #[cfg(test)]

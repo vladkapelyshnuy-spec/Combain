@@ -5,6 +5,7 @@
 #![allow(unused_imports)]
 
 pub mod image_provider;
+pub mod elevenlabs_tts_provider;
 pub mod openai_image_provider;
 pub mod openai_text_provider;
 pub mod openai_tts_provider;
@@ -18,6 +19,7 @@ pub mod video_provider;
 pub mod mock;
 
 pub use image_provider::{GeneratedImage, ImageProvider, ImageRequest};
+pub use elevenlabs_tts_provider::{ElevenLabsConfig, ElevenLabsTtsProvider};
 pub use openai_image_provider::{OpenAiImageConfig, OpenAiImageProvider};
 pub use openai_text_provider::{OpenAiConfig, OpenAiTextProvider};
 pub use openai_tts_provider::{OpenAiTtsConfig, OpenAiTtsProvider};
