@@ -208,6 +208,18 @@ fn golden_path_creates_project_to_validated_timeline() -> Result<(), AppError> {
         let audio_version =
             asset_validation::validate_asset_has_selected_version(&conn, audio_asset.id)?;
 
+        // Get selected versions for the assets
+        let video_versions = asset_version_repository::list_by_asset(&conn, video_asset.id)?;
+        let video_version = video_versions
+            .iter()
+            .find(|v| v.selected)
+            .expect("video asset should have selected version");
+        let audio_versions = asset_version_repository::list_by_asset(&conn, audio_asset.id)?;
+        let audio_version = audio_versions
+            .iter()
+            .find(|v| v.selected)
+            .expect("audio asset should have selected version");
+
         // Add video clip (5 seconds)
         let video_clip = TimelineClip::new(
             timeline.id,
@@ -238,8 +250,11 @@ fn golden_path_creates_project_to_validated_timeline() -> Result<(), AppError> {
     let clips = timeline_validation::validate_timeline_has_clips(&conn, timeline.id)?;
     assert_eq!(clips.len(), 6); // 3 scenes × 2 clips (video + audio)
 
-    // Validate all clips have valid assets
+    // Validate all clips have valid asset versions
     timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id)?;
+
+    // Validate all clip asset files exist
+    timeline_validation::validate_all_clip_asset_files_exist(&conn, timeline.id)?;
 
     // Comprehensive validation: timeline ready for render
     let ready_timeline =
@@ -288,6 +303,8 @@ fn golden_path_creates_project_to_validated_timeline() -> Result<(), AppError> {
     // Timeline validation
     assert!(timeline_validation::validate_timeline_exists(&conn, project.id).is_ok());
     assert!(timeline_validation::validate_timeline_has_clips(&conn, timeline.id).is_ok());
+    assert!(timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id).is_ok());
+    assert!(timeline_validation::validate_all_clip_asset_files_exist(&conn, timeline.id).is_ok());
     assert!(
         timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id).is_ok()
     );
