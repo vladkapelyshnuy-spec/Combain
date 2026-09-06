@@ -7,6 +7,7 @@ import type { Scene, SceneId } from "../models/scene";
 import type { AppPath } from "../routing/routes";
 import {
   generateImage,
+  generateTts,
   generateVideo,
   getAssetFileUrl,
   getAssets,
@@ -29,6 +30,7 @@ type SceneMediaState = {
 };
 
 type VideoGenerationMode = "image" | "text";
+type StoryboardMediaType = Extract<AssetType, "IMAGE" | "VIDEO" | "AUDIO">;
 
 const emptyMediaState = (): SceneMediaState => ({
   asset: null,
@@ -43,7 +45,7 @@ function formatStatus(status: Scene["status"]) {
 
 async function loadSceneMedia(
   sceneId: SceneId,
-  assetType: Extract<AssetType, "IMAGE" | "VIDEO">,
+  assetType: StoryboardMediaType,
 ): Promise<SceneMediaState> {
   try {
     const asset = (await getAssets(sceneId)).find((item) => item.asset_type === assetType) ?? null;
@@ -60,10 +62,13 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [imageStates, setImageStates] = useState<Record<SceneId, SceneMediaState>>({});
   const [videoStates, setVideoStates] = useState<Record<SceneId, SceneMediaState>>({});
+  const [audioStates, setAudioStates] = useState<Record<SceneId, SceneMediaState>>({});
   const [activeImageScenes, setActiveImageScenes] = useState<Set<SceneId>>(new Set());
   const [activeVideoScenes, setActiveVideoScenes] = useState<Set<SceneId>>(new Set());
+  const [activeAudioScenes, setActiveAudioScenes] = useState<Set<SceneId>>(new Set());
   const imageRequests = useRef<Set<SceneId>>(new Set());
   const videoRequests = useRef<Set<SceneId>>(new Set());
+  const audioRequests = useRef<Set<SceneId>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -76,15 +81,17 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
       setScenes(loadedScenes);
       const entries = await Promise.all(
         loadedScenes.map(async (scene) => {
-          const [image, video] = await Promise.all([
+          const [image, video, audio] = await Promise.all([
             loadSceneMedia(scene.id, "IMAGE"),
             loadSceneMedia(scene.id, "VIDEO"),
+            loadSceneMedia(scene.id, "AUDIO"),
           ]);
-          return [scene.id, image, video] as const;
+          return [scene.id, image, video, audio] as const;
         }),
       );
       setImageStates(Object.fromEntries(entries.map(([sceneId, image]) => [sceneId, image])));
       setVideoStates(Object.fromEntries(entries.map(([sceneId, , video]) => [sceneId, video])));
+      setAudioStates(Object.fromEntries(entries.map(([sceneId, , , audio]) => [sceneId, audio])));
     } catch (error) {
       setLoadError(getIpcError(error).message);
     } finally {
@@ -96,8 +103,10 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
     setScenes([]);
     setImageStates({});
     setVideoStates({});
+    setAudioStates({});
     setActiveImageScenes(new Set());
     setActiveVideoScenes(new Set());
+    setActiveAudioScenes(new Set());
     if (selectedProject) void loadStoryboard();
   }, [loadStoryboard, selectedProject]);
 
@@ -197,16 +206,53 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
     }
   };
 
+  const handleGenerateAudio = async (scene: Scene) => {
+    if (audioRequests.current.has(scene.id) || !scene.narration.trim()) return;
+    audioRequests.current.add(scene.id);
+    setSceneActive(setActiveAudioScenes, scene.id, true);
+    updateMediaState(setAudioStates, scene.id, (current) => ({ ...current, error: null }));
+    try {
+      const generated = await generateTts(scene.id);
+      updateMediaState(setAudioStates, scene.id, (current) => ({
+        asset: current.asset ?? {
+          id: generated.asset_id,
+          scene_id: scene.id,
+          asset_type: "AUDIO",
+        },
+        versions: [...current.versions.filter((version) => version.id !== generated.id), generated]
+          .sort((left, right) => left.version - right.version),
+        previewVersionId: generated.id,
+        error: null,
+      }));
+      const persisted = await loadSceneMedia(scene.id, "AUDIO");
+      updateMediaState(setAudioStates, scene.id, () => ({
+        ...persisted,
+        previewVersionId: persisted.versions.some((version) => version.id === generated.id)
+          ? generated.id
+          : persisted.previewVersionId,
+      }));
+    } catch (error) {
+      updateMediaState(setAudioStates, scene.id, (current) => ({
+        ...current,
+        error: getIpcError(error).message,
+      }));
+    } finally {
+      audioRequests.current.delete(scene.id);
+      setSceneActive(setActiveAudioScenes, scene.id, false);
+    }
+  };
+
   const handleSelectVersion = async (
     sceneId: SceneId,
     version: AssetVersion,
-    mediaType: Extract<AssetType, "IMAGE" | "VIDEO">,
+    mediaType: StoryboardMediaType,
   ) => {
     const isImage = mediaType === "IMAGE";
-    const states = isImage ? imageStates : videoStates;
-    const activeScenes = isImage ? activeImageScenes : activeVideoScenes;
-    const stateSetter = isImage ? setImageStates : setVideoStates;
-    const activeSetter = isImage ? setActiveImageScenes : setActiveVideoScenes;
+    const isVideo = mediaType === "VIDEO";
+    const states = isImage ? imageStates : isVideo ? videoStates : audioStates;
+    const activeScenes = isImage ? activeImageScenes : isVideo ? activeVideoScenes : activeAudioScenes;
+    const stateSetter = isImage ? setImageStates : isVideo ? setVideoStates : setAudioStates;
+    const activeSetter = isImage ? setActiveImageScenes : isVideo ? setActiveVideoScenes : setActiveAudioScenes;
     const mediaState = states[sceneId];
     if (!mediaState?.asset || activeScenes.has(sceneId) || version.selected) return;
 
@@ -235,7 +281,7 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
     );
   }
 
-  const hasActiveGeneration = activeImageScenes.size > 0 || activeVideoScenes.size > 0;
+  const hasActiveGeneration = activeImageScenes.size > 0 || activeVideoScenes.size > 0 || activeAudioScenes.size > 0;
 
   return (
     <div className="workspace-page storyboard-page">
@@ -251,7 +297,7 @@ export function StoryboardPage({ onNavigate, selectedProject }: StoryboardPagePr
       {!isLoading && !loadError && scenes.length > 0 ? <>
         <div className="storyboard-toolbar"><p>Scenes and stored media versions are displayed in production order.</p><div><Button variant="secondary" onClick={() => onNavigate("/scenes")}>Edit scenes</Button><Button variant="secondary" onClick={() => void loadStoryboard()} disabled={hasActiveGeneration}>Refresh</Button></div></div>
         <ol className="storyboard-grid" aria-label="Project storyboard scenes">
-          {scenes.map((scene, index) => <StoryboardCard key={scene.id} scene={scene} index={index} imageState={imageStates[scene.id] ?? emptyMediaState()} videoState={videoStates[scene.id] ?? emptyMediaState()} isImageActive={activeImageScenes.has(scene.id)} isVideoActive={activeVideoScenes.has(scene.id)} onGenerateImage={handleGenerateImage} onGenerateVideo={handleGenerateVideo} onSelectVersion={handleSelectVersion} />)}
+          {scenes.map((scene, index) => <StoryboardCard key={scene.id} scene={scene} index={index} imageState={imageStates[scene.id] ?? emptyMediaState()} videoState={videoStates[scene.id] ?? emptyMediaState()} audioState={audioStates[scene.id] ?? emptyMediaState()} isImageActive={activeImageScenes.has(scene.id)} isVideoActive={activeVideoScenes.has(scene.id)} isAudioActive={activeAudioScenes.has(scene.id)} onGenerateImage={handleGenerateImage} onGenerateVideo={handleGenerateVideo} onGenerateAudio={handleGenerateAudio} onSelectVersion={handleSelectVersion} />)}
         </ol>
       </> : null}
     </div>
@@ -263,14 +309,17 @@ type StoryboardCardProps = {
   index: number;
   imageState: SceneMediaState;
   videoState: SceneMediaState;
+  audioState: SceneMediaState;
   isImageActive: boolean;
   isVideoActive: boolean;
+  isAudioActive: boolean;
   onGenerateImage: (scene: Scene) => Promise<void>;
   onGenerateVideo: (scene: Scene, mode: VideoGenerationMode) => Promise<void>;
+  onGenerateAudio: (scene: Scene) => Promise<void>;
   onSelectVersion: (
     sceneId: SceneId,
     version: AssetVersion,
-    mediaType: Extract<AssetType, "IMAGE" | "VIDEO">,
+    mediaType: StoryboardMediaType,
   ) => Promise<void>;
 };
 
@@ -286,17 +335,23 @@ function StoryboardCard({
   index,
   imageState,
   videoState,
+  audioState,
   isImageActive,
   isVideoActive,
+  isAudioActive,
   onGenerateImage,
   onGenerateVideo,
+  onGenerateAudio,
   onSelectVersion,
 }: StoryboardCardProps) {
   const imagePreview = useMemo(() => findPreviewVersion(imageState), [imageState]);
   const videoPreview = useMemo(() => findPreviewVersion(videoState), [videoState]);
+  const audioPreview = useMemo(() => findPreviewVersion(audioState), [audioState]);
   const [videoPreviewFailed, setVideoPreviewFailed] = useState(false);
+  const [audioPreviewFailed, setAudioPreviewFailed] = useState(false);
   const hasImagePrompt = Boolean(scene.visual_prompt.trim());
   const hasVideoPrompt = Boolean(scene.video_prompt.trim());
+  const hasNarration = Boolean(scene.narration.trim());
   const hasSelectedImage = imageState.versions.some((version) => version.selected);
   const [videoGenerationMode, setVideoGenerationMode] = useState<VideoGenerationMode>(
     hasSelectedImage ? "image" : "text",
@@ -312,6 +367,10 @@ function StoryboardCard({
   useEffect(() => {
     setVideoPreviewFailed(false);
   }, [videoPreview?.id]);
+
+  useEffect(() => {
+    setAudioPreviewFailed(false);
+  }, [audioPreview?.id]);
 
   useEffect(() => {
     if (!hasSelectedImage && videoGenerationMode === "image") {
@@ -362,6 +421,21 @@ function StoryboardCard({
           <VersionList scene={scene} mediaType="VIDEO" state={videoState} isActive={isVideoActive} onSelectVersion={onSelectVersion} />
         </section>
 
+        <section className="storyboard-media-section storyboard-audio-section" aria-labelledby={`audio-heading-${scene.id}`}>
+          <div className="storyboard-media-heading-row"><h3 id={`audio-heading-${scene.id}`} className="storyboard-media-heading">Audio / Voice</h3>{isAudioActive ? <span className="audio-generation-status" role="status">Generating audio…</span> : null}</div>
+          <div className="storyboard-audio-preview" aria-busy={isAudioActive}>
+            {audioPreview && !audioPreviewFailed ? <audio key={audioPreview.id} controls preload="metadata" onError={() => setAudioPreviewFailed(true)}><source src={getAssetFileUrl(audioPreview.file_path)} type="audio/mpeg" />Your browser does not support audio playback.</audio> : <div className="storyboard-audio-placeholder"><span className="storyboard-placeholder-mark" aria-hidden="true"><SectionIcon name="media" /></span><div><strong>{audioPreviewFailed ? "Audio preview unavailable" : "No generated voice"}</strong><span>{audioPreviewFailed ? "The stored local audio could not be loaded." : hasNarration ? "Generate speech directly from this scene's narration" : "Add narration in the Scene Editor first"}</span></div></div>}
+          </div>
+          <div className="storyboard-image-controls">
+            <div><span className="storyboard-control-label">Voice</span><strong>{audioPreview ? `Version ${audioPreview.version}` : "Not generated"}</strong><small>{audioPreview ? audioPreview.model : "Uses the default TTS profile"}</small></div>
+            <Button onClick={() => void onGenerateAudio(scene)} disabled={isAudioActive || !hasNarration}>{isAudioActive ? "Generating…" : audioState.versions.length ? "Generate new voice" : "Generate voice"}</Button>
+          </div>
+          {!hasNarration ? <p className="storyboard-image-warning">Narration is required before voice generation.</p> : null}
+          {audioPreviewFailed ? <p className="storyboard-image-error" role="alert">The selected audio file could not be previewed. Try another stored version.</p> : null}
+          {audioState.error ? <p className="storyboard-image-error" role="alert">{audioState.error}</p> : null}
+          <VersionList scene={scene} mediaType="AUDIO" state={audioState} isActive={isAudioActive} onSelectVersion={onSelectVersion} />
+        </section>
+
         <div className="storyboard-narration"><span>Narration</span><p>{scene.narration || "No narration has been added."}</p></div>
         <dl className="storyboard-prompts"><div><dt>Visual prompt</dt><dd>{scene.visual_prompt || "Not set"}</dd></div><div><dt>Video prompt</dt><dd>{scene.video_prompt || "Not set"}</dd></div></dl>
         <footer className="storyboard-card-footer"><span>Duration</span><strong>{scene.duration} sec</strong></footer>
@@ -372,7 +446,7 @@ function StoryboardCard({
 
 type VersionListProps = {
   scene: Scene;
-  mediaType: Extract<AssetType, "IMAGE" | "VIDEO">;
+  mediaType: StoryboardMediaType;
   state: SceneMediaState;
   isActive: boolean;
   onSelectVersion: StoryboardCardProps["onSelectVersion"];
@@ -380,7 +454,7 @@ type VersionListProps = {
 
 function VersionList({ scene, mediaType, state, isActive, onSelectVersion }: VersionListProps) {
   if (!state.versions.length) return null;
-  const label = mediaType === "IMAGE" ? "Image" : "Video";
+  const label = mediaType === "IMAGE" ? "Image" : mediaType === "VIDEO" ? "Video" : "Audio";
   return (
     <div className="asset-version-list" aria-label={`${label} versions for ${scene.title}`}>
       {state.versions.map((version) => <button key={version.id} type="button" className={version.selected ? "asset-version-button selected" : "asset-version-button"} onClick={() => void onSelectVersion(scene.id, version, mediaType)} disabled={isActive || version.selected} aria-label={`${version.selected ? "Selected" : "Select"} ${label.toLowerCase()} version ${version.version}`}><span>v{version.version}</span>{version.selected ? <small>Selected</small> : <small>{version.id === state.previewVersionId ? "Preview" : "Select"}</small>}</button>)}
