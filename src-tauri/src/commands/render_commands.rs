@@ -24,12 +24,10 @@ fn resolve_asset_version_path(
     conn: &Connection,
     asset_version_id: AssetVersionId,
 ) -> Result<PathBuf, AppError> {
-    let version = asset_version_repository::get_by_id(conn, asset_version_id)?.ok_or_else(|| {
-        AppError::invalid_input(format!(
-            "asset version {} does not exist",
-            asset_version_id
-        ))
-    })?;
+    let version =
+        asset_version_repository::get_by_id(conn, asset_version_id)?.ok_or_else(|| {
+            AppError::invalid_input(format!("asset version {} does not exist", asset_version_id))
+        })?;
 
     // Verify file exists at the stored path
     if !version.file_path.exists() {
@@ -90,6 +88,7 @@ pub fn render_video_impl(
             file_path: path,
             start_ms: clip.start_time,
             duration_ms: clip.duration,
+            source_offset_ms: clip.source_offset,
         });
     }
 
@@ -100,6 +99,7 @@ pub fn render_video_impl(
             file_path: path,
             start_ms: clip.start_time,
             duration_ms: clip.duration,
+            source_offset_ms: clip.source_offset,
         });
     }
 
@@ -298,8 +298,8 @@ mod tests {
         let timeline = Timeline::new(project.id);
         timeline_repository::insert(&db.conn(), &timeline).expect("insert timeline");
 
-        let clip = TimelineClip::new(timeline.id, version.id, Track::Video, 0, 5000)
-            .expect("create clip");
+        let clip =
+            TimelineClip::new(timeline.id, version.id, Track::Video, 0, 5000).expect("create clip");
         timeline_clip_repository::insert(&db.conn(), &clip).expect("insert clip");
 
         (project.id, timeline.id, version.id)
@@ -383,7 +383,8 @@ mod tests {
             "test_provider",
             "test_model",
             "test prompt",
-        ).expect("valid version");
+        )
+        .expect("valid version");
         asset_version_repository::insert(&db.conn(), &audio_version).expect("insert version");
 
         let timeline = Timeline::new(project.id);

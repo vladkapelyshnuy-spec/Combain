@@ -9,8 +9,8 @@ use crate::error::AppError;
 
 pub fn insert(conn: &Connection, clip: &TimelineClip) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO timeline_clips (id, timeline_id, asset_version_id, track, start_time, duration)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO timeline_clips (id, timeline_id, asset_version_id, track, start_time, duration, source_offset)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             clip.id.to_string(),
             clip.timeline_id.to_string(),
@@ -18,6 +18,7 @@ pub fn insert(conn: &Connection, clip: &TimelineClip) -> Result<(), AppError> {
             track_to_str(clip.track),
             clip.start_time as i64,
             clip.duration as i64,
+            clip.source_offset as i64,
         ],
     )
     .map_err(map_db_err)?;
@@ -27,13 +28,14 @@ pub fn insert(conn: &Connection, clip: &TimelineClip) -> Result<(), AppError> {
 pub fn update(conn: &Connection, clip: &TimelineClip) -> Result<(), AppError> {
     let rows = conn
         .execute(
-            "UPDATE timeline_clips SET asset_version_id = ?2, track = ?3, start_time = ?4, duration = ?5 WHERE id = ?1",
+            "UPDATE timeline_clips SET asset_version_id = ?2, track = ?3, start_time = ?4, duration = ?5, source_offset = ?6 WHERE id = ?1",
             params![
                 clip.id.to_string(),
                 clip.asset_version_id.to_string(),
                 track_to_str(clip.track),
                 clip.start_time as i64,
                 clip.duration as i64,
+                clip.source_offset as i64,
             ],
         )
         .map_err(map_db_err)?;
@@ -62,7 +64,7 @@ pub fn list_by_timeline(
 ) -> Result<Vec<TimelineClip>, AppError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, timeline_id, asset_version_id, track, start_time, duration
+            "SELECT id, timeline_id, asset_version_id, track, start_time, duration, source_offset
              FROM timeline_clips WHERE timeline_id = ?1 ORDER BY start_time",
         )
         .map_err(map_db_err)?;
@@ -86,6 +88,7 @@ fn row_to_clip(row: &rusqlite::Row<'_>) -> rusqlite::Result<TimelineClip> {
         track: str_to_track(&track)?,
         start_time: row.get::<_, i64>(4)? as u64,
         duration: row.get::<_, i64>(5)? as u64,
+        source_offset: row.get::<_, i64>(6)? as u64,
     })
 }
 
@@ -144,7 +147,8 @@ mod tests {
             "test_provider",
             "test_model",
             "test prompt",
-        ).expect("valid version");
+        )
+        .expect("valid version");
         crate::repository::asset_version_repository::insert(&db.conn(), &version)
             .expect("insert version");
 
@@ -157,21 +161,23 @@ mod tests {
     fn round_trips_a_clip() {
         let db = Database::open_in_memory().expect("open");
         let (timeline_id, asset_version_id) = seed_timeline_and_asset(&db);
-        let clip =
-            TimelineClip::new(timeline_id, asset_version_id, Track::Video, 0, 5000).expect("valid clip");
+        let clip = TimelineClip::new(timeline_id, asset_version_id, Track::Video, 0, 5000)
+            .expect("valid clip")
+            .with_source_offset(1250);
 
         insert(&db.conn(), &clip).expect("insert");
         let clips = list_by_timeline(&db.conn(), timeline_id).expect("list");
 
         assert_eq!(clips, vec![clip]);
+        assert_eq!(clips[0].source_offset, 1250);
     }
 
     #[test]
     fn updates_a_clip() {
         let db = Database::open_in_memory().expect("open");
         let (timeline_id, asset_version_id) = seed_timeline_and_asset(&db);
-        let mut clip =
-            TimelineClip::new(timeline_id, asset_version_id, Track::Video, 0, 5000).expect("valid clip");
+        let mut clip = TimelineClip::new(timeline_id, asset_version_id, Track::Video, 0, 5000)
+            .expect("valid clip");
         insert(&db.conn(), &clip).expect("insert");
 
         clip.start_time = 1000;
@@ -187,8 +193,8 @@ mod tests {
     fn deletes_a_clip() {
         let db = Database::open_in_memory().expect("open");
         let (timeline_id, asset_version_id) = seed_timeline_and_asset(&db);
-        let clip =
-            TimelineClip::new(timeline_id, asset_version_id, Track::Audio, 0, 4000).expect("valid clip");
+        let clip = TimelineClip::new(timeline_id, asset_version_id, Track::Audio, 0, 4000)
+            .expect("valid clip");
         insert(&db.conn(), &clip).expect("insert");
 
         delete(&db.conn(), clip.id).expect("delete");
@@ -200,10 +206,10 @@ mod tests {
     fn lists_clips_ordered_by_start_time() {
         let db = Database::open_in_memory().expect("open");
         let (timeline_id, asset_version_id) = seed_timeline_and_asset(&db);
-        let later =
-            TimelineClip::new(timeline_id, asset_version_id, Track::Video, 5000, 2000).expect("later");
-        let earlier =
-            TimelineClip::new(timeline_id, asset_version_id, Track::Video, 0, 5000).expect("earlier");
+        let later = TimelineClip::new(timeline_id, asset_version_id, Track::Video, 5000, 2000)
+            .expect("later");
+        let earlier = TimelineClip::new(timeline_id, asset_version_id, Track::Video, 0, 5000)
+            .expect("earlier");
         insert(&db.conn(), &later).expect("insert later");
         insert(&db.conn(), &earlier).expect("insert earlier");
 

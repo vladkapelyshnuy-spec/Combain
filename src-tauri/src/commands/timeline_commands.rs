@@ -43,6 +43,14 @@ pub fn move_clip_impl(
         .find(|c| c.id == clip_id)
         .ok_or_else(|| AppError::invalid_input(format!("clip {clip_id} does not exist")))?;
 
+    validate_video_range_available(
+        conn,
+        timeline_id,
+        Some(clip.id),
+        clip.track,
+        new_start_time,
+        clip.duration,
+    )?;
     clip.start_time = new_start_time;
     timeline_clip_repository::update(conn, &clip)?;
     tracing::info!(clip_id = %clip_id, new_start_time = new_start_time, "clip moved");
@@ -68,6 +76,14 @@ pub fn trim_clip_impl(
         .find(|c| c.id == clip_id)
         .ok_or_else(|| AppError::invalid_input(format!("clip {clip_id} does not exist")))?;
 
+    validate_video_range_available(
+        conn,
+        timeline_id,
+        Some(clip.id),
+        clip.track,
+        clip.start_time,
+        new_duration,
+    )?;
     clip.duration = new_duration;
     timeline_clip_repository::update(conn, &clip)?;
     tracing::info!(clip_id = %clip_id, new_duration = new_duration, "clip trimmed");
@@ -105,13 +121,22 @@ pub fn split_clip_impl(
     first_clip.duration = split_time;
 
     // Second clip: new clip starting after first, remaining duration
+    let second_source_offset = original_clip
+        .source_offset
+        .checked_add(split_time)
+        .ok_or_else(|| AppError::invalid_input("split source offset overflow"))?;
+    let second_start_time = original_clip
+        .start_time
+        .checked_add(split_time)
+        .ok_or_else(|| AppError::invalid_input("split timeline position overflow"))?;
     let second_clip = TimelineClip::new(
         timeline_id,
         original_clip.asset_version_id,
         original_clip.track,
-        original_clip.start_time + split_time,
+        second_start_time,
         original_clip.duration - split_time,
-    )?;
+    )?
+    .with_source_offset(second_source_offset);
 
     // Update first, insert second
     timeline_clip_repository::update(conn, &first_clip)?;
@@ -150,6 +175,35 @@ fn find_clip_timeline(conn: &Connection, clip_id: TimelineClipId) -> Result<Time
     .pipe(Ok)
 }
 
+fn validate_video_range_available(
+    conn: &Connection,
+    timeline_id: TimelineId,
+    excluded_clip_id: Option<TimelineClipId>,
+    track: Track,
+    start_time: u64,
+    duration: u64,
+) -> Result<(), AppError> {
+    if track != Track::Video {
+        return Ok(());
+    }
+    let end_time = start_time
+        .checked_add(duration)
+        .ok_or_else(|| AppError::invalid_input("video clip time range overflow"))?;
+    let clips = timeline_clip_repository::list_by_timeline(conn, timeline_id)?;
+    if let Some(overlap) = clips.into_iter().find(|clip| {
+        clip.track == Track::Video
+            && Some(clip.id) != excluded_clip_id
+            && start_time < clip.start_time.saturating_add(clip.duration)
+            && clip.start_time < end_time
+    }) {
+        return Err(AppError::invalid_input(format!(
+            "video clip overlaps existing clip {} (VIDEO overlaps are not supported)",
+            overlap.id
+        )));
+    }
+    Ok(())
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Tauri Commands (thin wrappers around impl functions)
 // ────────────────────────────────────────────────────────────────────────────
@@ -178,7 +232,8 @@ pub fn get_timeline(
     timeline_repository::get_by_project(&db.conn(), project_id)
 }
 
-/// Input: `timeline_id`, `asset_version_id`, `track`, `start_time` (ms), `duration` (ms)
+/// Input: `timeline_id`, `asset_version_id`, `track`, `start_time` (ms), `duration` (ms),
+/// optional `source_offset` (ms)
 /// Output: newly created [`TimelineClip`]
 /// Error: [`AppError::InvalidInput`] if duration is 0 or timeline doesn't exist;
 ///        [`AppError::Db`] on storage failure
@@ -191,9 +246,12 @@ pub fn add_clip(
     track: Track,
     start_time: u64,
     duration: u64,
+    source_offset: Option<u64>,
 ) -> Result<TimelineClip, AppError> {
-    let clip = TimelineClip::new(timeline_id, asset_version_id, track, start_time, duration)?;
+    let clip = TimelineClip::new(timeline_id, asset_version_id, track, start_time, duration)?
+        .with_source_offset(source_offset.unwrap_or(0));
     let conn = db.conn();
+    validate_video_range_available(&conn, timeline_id, None, track, start_time, duration)?;
     timeline_clip_repository::insert(&conn, &clip)?;
     tracing::info!(
         clip_id = %clip.id,
@@ -233,6 +291,33 @@ pub fn update_clip(
         .find(|c| c.id == clip_id)
         .ok_or_else(|| AppError::invalid_input(format!("clip {clip_id} does not exist")))?;
 
+    let original_end = clip.start_time.saturating_add(clip.duration);
+    let new_end = start_time
+        .checked_add(duration)
+        .ok_or_else(|| AppError::invalid_input("timeline clip time range overflow"))?;
+    if new_end == original_end {
+        if start_time >= clip.start_time {
+            clip.source_offset = clip
+                .source_offset
+                .checked_add(start_time - clip.start_time)
+                .ok_or_else(|| AppError::invalid_input("source offset overflow"))?;
+        } else {
+            clip.source_offset = clip
+                .source_offset
+                .checked_sub(clip.start_time - start_time)
+                .ok_or_else(|| {
+                    AppError::invalid_input("cannot trim before the beginning of source media")
+                })?;
+        }
+    }
+    validate_video_range_available(
+        &conn,
+        timeline_id,
+        Some(clip.id),
+        clip.track,
+        start_time,
+        duration,
+    )?;
     clip.start_time = start_time;
     clip.duration = duration;
     timeline_clip_repository::update(&conn, &clip)?;
@@ -317,7 +402,9 @@ mod tests {
     use crate::domain::ids::AssetVersionId;
     use crate::domain::project::Project;
     use crate::domain::scene::Scene;
-    use crate::repository::{asset_repository, asset_version_repository, project_repository, scene_repository};
+    use crate::repository::{
+        asset_repository, asset_version_repository, project_repository, scene_repository,
+    };
 
     fn open_db() -> Database {
         Database::open_in_memory().expect("open db")
@@ -341,7 +428,8 @@ mod tests {
             "test_provider",
             "test_model",
             "test prompt",
-        ).expect("valid version");
+        )
+        .expect("valid version");
         asset_version_repository::insert(&db.conn(), &version).expect("insert version");
 
         (project.id, version.id)
@@ -442,16 +530,19 @@ mod tests {
         let (project_id, asset_id) = seed_project_and_asset(&db);
         let timeline = create_timeline_impl(&db.conn(), project_id).expect("create timeline");
 
-        let clip = TimelineClip::new(timeline.id, asset_id, Track::Video, 1000, 6000)
-            .expect("create clip");
+        let clip = TimelineClip::new(timeline.id, asset_id, Track::Video, 10000, 8000)
+            .expect("create clip")
+            .with_source_offset(2000);
         timeline_clip_repository::insert(&db.conn(), &clip).expect("insert");
 
-        let (first, second) = split_clip_impl(&db.conn(), clip.id, 2000).expect("split");
+        let (first, second) = split_clip_impl(&db.conn(), clip.id, 3000).expect("split");
 
-        assert_eq!(first.start_time, 1000);
-        assert_eq!(first.duration, 2000);
-        assert_eq!(second.start_time, 3000);
-        assert_eq!(second.duration, 4000);
+        assert_eq!(first.start_time, 10000);
+        assert_eq!(first.duration, 3000);
+        assert_eq!(first.source_offset, 2000);
+        assert_eq!(second.start_time, 13000);
+        assert_eq!(second.duration, 5000);
+        assert_eq!(second.source_offset, 5000);
 
         let clips =
             timeline_clip_repository::list_by_timeline(&db.conn(), timeline.id).expect("list");
@@ -504,5 +595,22 @@ mod tests {
         let clips =
             timeline_clip_repository::list_by_timeline(&db.conn(), timeline.id).expect("list");
         assert!(clips.is_empty());
+    }
+
+    #[test]
+    fn rejects_overlapping_video_range_but_allows_audio_overlap() {
+        let db = open_db();
+        let (project_id, asset_version_id) = seed_project_and_asset(&db);
+        let timeline = create_timeline_impl(&db.conn(), project_id).expect("create timeline");
+        let first = TimelineClip::new(timeline.id, asset_version_id, Track::Video, 0, 5000)
+            .expect("first clip");
+        timeline_clip_repository::insert(&db.conn(), &first).expect("insert first");
+
+        let error =
+            validate_video_range_available(&db.conn(), timeline.id, None, Track::Video, 4000, 3000)
+                .expect_err("overlap rejected");
+        assert!(error.to_string().contains("VIDEO overlaps"));
+        validate_video_range_available(&db.conn(), timeline.id, None, Track::Audio, 4000, 3000)
+            .expect("audio overlap allowed");
     }
 }
