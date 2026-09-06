@@ -36,12 +36,6 @@ export const appRoutes = [
     icon: "timeline",
   },
   {
-    path: "/export",
-    label: "Export",
-    description: "Prepare the completed project for delivery.",
-    icon: "export",
-  },
-  {
     path: "/settings",
     label: "Settings",
     description: "Configure application and provider preferences.",

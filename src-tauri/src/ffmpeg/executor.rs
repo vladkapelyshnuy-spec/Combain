@@ -3,7 +3,11 @@
 //! Handles running FFmpeg commands as child processes, capturing output,
 //! and handling errors.
 
+use std::ffi::OsString;
 use std::process::Command;
+
+use tauri::AppHandle;
+use tauri_plugin_shell::ShellExt;
 
 use crate::error::AppError;
 
@@ -13,6 +17,43 @@ pub struct FFmpegOutput {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+}
+
+/// Execute one of the two application-bundled media sidecars. The sidecar
+/// name is fixed by backend code and is never supplied by the frontend.
+pub fn execute_bundled_sidecar(
+    app: &AppHandle,
+    sidecar: &'static str,
+    args: Vec<OsString>,
+) -> Result<FFmpegOutput, AppError> {
+    let command = app
+        .shell()
+        .sidecar(sidecar)
+        .map_err(|error| {
+            AppError::config(format!("Bundled {sidecar} runtime is unavailable: {error}"))
+        })?
+        .args(args);
+    tracing::info!(sidecar, "executing bundled media runtime");
+    let mut command: Command = command.into();
+    let output = command.output().map_err(|error| {
+        AppError::io(format!(
+            "Bundled {sidecar} runtime could not be started: {error}"
+        ))
+    })?;
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        return Err(AppError::provider(format!(
+            "Bundled {sidecar} failed with exit code {exit_code}: {}",
+            extract_error_summary(&stderr)
+        )));
+    }
+    Ok(FFmpegOutput {
+        exit_code,
+        stdout,
+        stderr,
+    })
 }
 
 /// Execute FFmpeg command and capture output.

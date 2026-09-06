@@ -4,9 +4,12 @@
 //! Phase 8 adds `extract_audio_duration_ms()` to read real duration from
 //! generated audio files using FFprobe.
 
-use std::path::Path;
+use std::{ffi::OsString, path::Path};
+
+use tauri::AppHandle;
 
 use crate::error::AppError;
+use crate::ffmpeg::{executor::execute_bundled_sidecar, FFPROBE_SIDECAR};
 
 /// Average speaking rate in words per second for typical narration.
 const WORDS_PER_SECOND: f64 = 2.5;
@@ -34,10 +37,14 @@ pub fn estimate_audio_duration_ms(narration: &str) -> u64 {
 /// FFprobe output parsing is robust: only numeric lines are parsed, ignoring
 /// warnings or other non-numeric stdout content.
 pub async fn extract_audio_duration_ms(
+    app: Option<&AppHandle>,
     file_path: &Path,
     fallback_text: &str,
 ) -> Result<u64, AppError> {
-    match try_ffprobe_duration(file_path).await {
+    let Some(app) = app else {
+        return Ok(estimate_audio_duration_ms(fallback_text));
+    };
+    match try_ffprobe_duration(app, file_path) {
         Ok(duration) => {
             tracing::debug!(
                 "extracted audio duration: {}ms from {}",
@@ -56,28 +63,21 @@ pub async fn extract_audio_duration_ms(
     }
 }
 
-async fn try_ffprobe_duration(file_path: &Path) -> Result<u64, AppError> {
-    let output = tokio::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-        ])
-        .arg(file_path)
-        .output()
-        .await
-        .map_err(|error| AppError::io(format!("failed to spawn ffprobe: {error}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::io(format!("ffprobe failed: {stderr}")));
-    }
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| AppError::io(format!("ffprobe output is not valid UTF-8: {error}")))?;
+fn try_ffprobe_duration(app: &AppHandle, file_path: &Path) -> Result<u64, AppError> {
+    let output = execute_bundled_sidecar(
+        app,
+        FFPROBE_SIDECAR,
+        vec![
+            OsString::from("-v"),
+            OsString::from("error"),
+            OsString::from("-show_entries"),
+            OsString::from("format=duration"),
+            OsString::from("-of"),
+            OsString::from("default=noprint_wrappers=1:nokey=1"),
+            file_path.as_os_str().to_owned(),
+        ],
+    )?;
+    let stdout = output.stdout;
 
     // Robust parsing: only parse the first line that looks like a number
     for line in stdout.lines() {
@@ -131,7 +131,7 @@ mod tests {
     async fn extract_falls_back_when_ffprobe_unavailable() {
         let nonexistent = Path::new("/nonexistent/audio.mp3");
         let fallback_text = "one two three four five";
-        let duration = extract_audio_duration_ms(nonexistent, fallback_text)
+        let duration = extract_audio_duration_ms(None, nonexistent, fallback_text)
             .await
             .expect("fallback should work");
         // 5 words / 2.5 = 2 sec = 2000ms

@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use rusqlite::Connection;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::db::Database;
 use crate::domain::ids::{AssetVersionId, TimelineId};
@@ -43,6 +43,7 @@ fn resolve_asset_version_path(
 /// Core render implementation.
 pub fn render_video_impl(
     db: &Database,
+    app: Option<&AppHandle>,
     data_root: &std::path::Path,
     timeline_id: TimelineId,
     output_name: &str,
@@ -117,16 +118,8 @@ pub fn render_video_impl(
     job_repository::insert(&conn, &job)?;
     tracing::info!(job_id = %job_id, timeline_id = %timeline_id, output_name = %output_name, "render job created");
 
-    // Detect FFmpeg binaries
-    let binaries = ffmpeg::detect_binaries().map_err(|e| {
-        job_repository::update_status(
-            &conn,
-            job_id,
-            crate::domain::job::JobStatus::Failed,
-            Some(e.to_string()),
-        )
-        .ok();
-        e
+    let app = app.ok_or_else(|| {
+        AppError::config("Bundled FFmpeg runtime requires a Tauri application handle")
     })?;
 
     // Build FFmpeg command with clip timing
@@ -136,17 +129,18 @@ pub fn render_video_impl(
         audio_timings.clone(),
     );
 
-    let ffmpeg_cmd = ffmpeg::command_builder::build_render_command(&binaries.ffmpeg, &config)
-        .map_err(|e| {
-            job_repository::update_status(
-                &conn,
-                job_id,
-                crate::domain::job::JobStatus::Failed,
-                Some(e.to_string()),
-            )
-            .ok();
-            e
-        })?;
+    let ffmpeg_cmd =
+        ffmpeg::command_builder::build_render_command(std::path::Path::new("ffmpeg"), &config)
+            .map_err(|e| {
+                job_repository::update_status(
+                    &conn,
+                    job_id,
+                    crate::domain::job::JobStatus::Failed,
+                    Some(e.to_string()),
+                )
+                .ok();
+                e
+            })?;
 
     // Execute FFmpeg
     tracing::info!(
@@ -156,7 +150,25 @@ pub fn render_video_impl(
         "executing FFmpeg render"
     );
 
-    let _ffmpeg_output = ffmpeg::executor::execute_ffmpeg(ffmpeg_cmd).map_err(|e| {
+    let ffmpeg_args = ffmpeg_cmd
+        .get_args()
+        .map(|argument| argument.to_os_string())
+        .collect();
+    let _ffmpeg_output =
+        ffmpeg::executor::execute_bundled_sidecar(app, ffmpeg::FFMPEG_SIDECAR, ffmpeg_args)
+            .map_err(|e| {
+                job_repository::update_status(
+                    &conn,
+                    job_id,
+                    crate::domain::job::JobStatus::Failed,
+                    Some(e.to_string()),
+                )
+                .ok();
+                e
+            })?;
+
+    // Validate output
+    let validation = ffmpeg::validator::validate_mp4_output(app, &output_path).map_err(|e| {
         job_repository::update_status(
             &conn,
             job_id,
@@ -166,19 +178,6 @@ pub fn render_video_impl(
         .ok();
         e
     })?;
-
-    // Validate output
-    let validation = ffmpeg::validator::validate_mp4_output(&binaries.ffprobe, &output_path)
-        .map_err(|e| {
-            job_repository::update_status(
-                &conn,
-                job_id,
-                crate::domain::job::JobStatus::Failed,
-                Some(e.to_string()),
-            )
-            .ok();
-            e
-        })?;
 
     if !validation.is_valid() {
         let error_msg = format!(
@@ -226,6 +225,7 @@ pub fn render_video_impl(
 /// Side effects: creates Job row, executes FFmpeg subprocess, writes MP4 file
 #[tauri::command]
 pub fn render_video(
+    app: AppHandle,
     db: State<'_, Database>,
     config: State<'_, crate::config::AppConfig>,
     timeline_id: TimelineId,
@@ -236,7 +236,7 @@ pub fn render_video(
         .as_ref()
         .ok_or_else(|| AppError::config("app_data_dir not configured".to_string()))?;
 
-    render_video_impl(&db, data_root, timeline_id, &output_name)
+    render_video_impl(&db, Some(&app), data_root, timeline_id, &output_name)
 }
 
 /// Input: `timeline_id`
@@ -321,7 +321,7 @@ mod tests {
         let db = open_db();
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
-        let error = render_video_impl(&db, temp_dir.path(), TimelineId::new(), "output")
+        let error = render_video_impl(&db, None, temp_dir.path(), TimelineId::new(), "output")
             .expect_err("nonexistent timeline");
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
     }
@@ -337,7 +337,7 @@ mod tests {
         let timeline = Timeline::new(project.id);
         timeline_repository::insert(&db.conn(), &timeline).expect("insert");
 
-        let error = render_video_impl(&db, temp_dir.path(), timeline.id, "output")
+        let error = render_video_impl(&db, None, temp_dir.path(), timeline.id, "output")
             .expect_err("empty timeline");
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
         assert!(error.to_string().contains("no clips"));
@@ -355,7 +355,7 @@ mod tests {
         storage::ensure_renders_dir(temp_dir.path(), project_id).expect("create dir");
         std::fs::write(&output_path, b"existing file").expect("write file");
 
-        let error = render_video_impl(&db, temp_dir.path(), timeline_id, "existing")
+        let error = render_video_impl(&db, None, temp_dir.path(), timeline_id, "existing")
             .expect_err("existing output");
         assert_eq!(error.code(), crate::error::ErrorCode::Conflict);
         assert!(error.to_string().contains("already exists"));
@@ -395,7 +395,7 @@ mod tests {
             .expect("create clip");
         timeline_clip_repository::insert(&db.conn(), &audio_clip).expect("insert");
 
-        let error = render_video_impl(&db, temp_dir.path(), timeline.id, "output")
+        let error = render_video_impl(&db, None, temp_dir.path(), timeline.id, "output")
             .expect_err("no video clips");
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
         assert!(error.to_string().contains("no video clips"));
