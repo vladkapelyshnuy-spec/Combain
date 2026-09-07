@@ -12,7 +12,10 @@ use crate::repository::project_repository;
 /// Validate that a project exists in the database.
 ///
 /// Returns the project if it exists, or an error if not found.
-pub fn validate_project_exists(conn: &Connection, project_id: ProjectId) -> Result<Project, AppError> {
+pub fn validate_project_exists(
+    conn: &Connection,
+    project_id: ProjectId,
+) -> Result<Project, AppError> {
     project_repository::get_by_id(conn, project_id)?
         .ok_or_else(|| AppError::invalid_input(format!("project {} does not exist", project_id)))
 }
@@ -77,7 +80,10 @@ mod tests {
 
         let result = validate_project_exists(&db.conn(), project_id);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code(), crate::error::ErrorCode::InvalidInput);
+        assert_eq!(
+            result.unwrap_err().code(),
+            crate::error::ErrorCode::InvalidInput
+        );
     }
 
     #[test]

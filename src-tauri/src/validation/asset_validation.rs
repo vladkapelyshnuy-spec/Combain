@@ -40,12 +40,9 @@ pub fn validate_asset_has_selected_version(
 ) -> Result<AssetVersion, AppError> {
     let versions = asset_version_repository::list_by_asset(conn, asset_id)?;
 
-    versions
-        .into_iter()
-        .find(|v| v.selected)
-        .ok_or_else(|| {
-            AppError::invalid_input(format!("asset {} has no selected version", asset_id))
-        })
+    versions.into_iter().find(|v| v.selected).ok_or_else(|| {
+        AppError::invalid_input(format!("asset {} has no selected version", asset_id))
+    })
 }
 
 /// Validate that an asset version's file exists on disk.
@@ -66,7 +63,10 @@ pub fn validate_asset_file_exists(version: &AssetVersion) -> Result<(), AppError
 ///
 /// Returns a list of AssetType that are not present for the scene.
 /// Useful for reporting what still needs to be generated.
-pub fn check_missing_asset_types(conn: &Connection, scene_id: SceneId) -> Result<Vec<AssetType>, AppError> {
+pub fn check_missing_asset_types(
+    conn: &Connection,
+    scene_id: SceneId,
+) -> Result<Vec<AssetType>, AppError> {
     let assets = asset_repository::list_by_scene(conn, scene_id)?;
     let present_types: Vec<AssetType> = assets.iter().map(|a| a.asset_type).collect();
 
