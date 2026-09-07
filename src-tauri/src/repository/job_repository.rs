@@ -488,9 +488,7 @@ mod tests {
 
         update_timeline_id(&db.conn(), job.id, timeline.id).expect("update");
 
-        let loaded = get_by_id(&db.conn(), job.id)
-            .expect("get")
-            .expect("found");
+        let loaded = get_by_id(&db.conn(), job.id).expect("get").expect("found");
         assert_eq!(loaded.timeline_id, Some(timeline.id));
     }
 
@@ -503,9 +501,7 @@ mod tests {
 
         update_output_path(&db.conn(), job.id, "/tmp/output.mp4".to_string()).expect("update");
 
-        let loaded = get_by_id(&db.conn(), job.id)
-            .expect("get")
-            .expect("found");
+        let loaded = get_by_id(&db.conn(), job.id).expect("get").expect("found");
         assert_eq!(loaded.output_path.as_deref(), Some("/tmp/output.mp4"));
     }
 }

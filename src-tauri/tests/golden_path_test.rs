@@ -303,7 +303,9 @@ fn golden_path_creates_project_to_validated_timeline() -> Result<(), AppError> {
     // Timeline validation
     assert!(timeline_validation::validate_timeline_exists(&conn, project.id).is_ok());
     assert!(timeline_validation::validate_timeline_has_clips(&conn, timeline.id).is_ok());
-    assert!(timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id).is_ok());
+    assert!(
+        timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id).is_ok()
+    );
     assert!(timeline_validation::validate_all_clip_asset_files_exist(&conn, timeline.id).is_ok());
     assert!(
         timeline_validation::validate_all_clips_have_asset_versions(&conn, timeline.id).is_ok()

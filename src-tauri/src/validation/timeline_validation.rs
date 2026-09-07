@@ -13,7 +13,10 @@ use crate::repository::{asset_version_repository, timeline_clip_repository, time
 /// Validate that a timeline exists for a project.
 ///
 /// Returns the timeline if found, or an error if not.
-pub fn validate_timeline_exists(conn: &Connection, project_id: ProjectId) -> Result<Timeline, AppError> {
+pub fn validate_timeline_exists(
+    conn: &Connection,
+    project_id: ProjectId,
+) -> Result<Timeline, AppError> {
     timeline_repository::get_by_project(conn, project_id)?
         .ok_or_else(|| AppError::invalid_input(format!("project {} has no timeline", project_id)))
 }
@@ -21,7 +24,10 @@ pub fn validate_timeline_exists(conn: &Connection, project_id: ProjectId) -> Res
 /// Validate that a timeline has at least one clip.
 ///
 /// Returns all clips for the timeline, or an error if none exist.
-pub fn validate_timeline_has_clips(conn: &Connection, timeline_id: TimelineId) -> Result<Vec<TimelineClip>, AppError> {
+pub fn validate_timeline_has_clips(
+    conn: &Connection,
+    timeline_id: TimelineId,
+) -> Result<Vec<TimelineClip>, AppError> {
     let clips = timeline_clip_repository::list_by_timeline(conn, timeline_id)?;
 
     if clips.is_empty() {
@@ -37,7 +43,10 @@ pub fn validate_timeline_has_clips(conn: &Connection, timeline_id: TimelineId) -
 /// Validate that all clips in a timeline reference valid asset versions.
 ///
 /// Checks that each clip's asset_version_id exists in the database.
-pub fn validate_all_clips_have_asset_versions(conn: &Connection, timeline_id: TimelineId) -> Result<(), AppError> {
+pub fn validate_all_clips_have_asset_versions(
+    conn: &Connection,
+    timeline_id: TimelineId,
+) -> Result<(), AppError> {
     let clips = timeline_clip_repository::list_by_timeline(conn, timeline_id)?;
 
     for clip in &clips {
@@ -65,15 +74,19 @@ pub fn validate_all_clip_asset_files_exist(
 
     for clip in &clips {
         let version = asset_version_repository::get_by_id(conn, clip.asset_version_id)?
-            .ok_or_else(|| AppError::invalid_input(format!(
-                "clip {} references non-existent asset version {}",
-                clip.id, clip.asset_version_id
-            )))?;
+            .ok_or_else(|| {
+                AppError::invalid_input(format!(
+                    "clip {} references non-existent asset version {}",
+                    clip.id, clip.asset_version_id
+                ))
+            })?;
 
         if !version.file_path.exists() {
             return Err(AppError::invalid_input(format!(
                 "clip {} references asset version {} whose file does not exist: {}",
-                clip.id, clip.asset_version_id, version.file_path.display()
+                clip.id,
+                clip.asset_version_id,
+                version.file_path.display()
             )));
         }
     }
@@ -109,7 +122,9 @@ mod tests {
     use crate::domain::project::Project;
     use crate::domain::scene::Scene;
     use crate::domain::timeline_clip::Track;
-    use crate::repository::{asset_repository, asset_version_repository, project_repository, scene_repository};
+    use crate::repository::{
+        asset_repository, asset_version_repository, project_repository, scene_repository,
+    };
 
     fn open_db() -> Database {
         Database::open_in_memory().expect("open db")
@@ -237,15 +252,8 @@ mod tests {
         let temp_file = tempfile::NamedTempFile::new().expect("temp file");
         let file_path = temp_file.path().to_path_buf();
 
-        let version = AssetVersion::new(
-            asset.id,
-            1,
-            file_path,
-            "provider",
-            "model",
-            "prompt",
-        )
-        .expect("version");
+        let version = AssetVersion::new(asset.id, 1, file_path, "provider", "model", "prompt")
+            .expect("version");
         asset_version_repository::insert(&db.conn(), &version).expect("insert");
 
         let clip = TimelineClip::new(timeline.id, version.id, Track::Video, 0, 5000).expect("clip");
@@ -301,15 +309,8 @@ mod tests {
         let temp_file = tempfile::NamedTempFile::new().expect("temp file");
         let file_path = temp_file.path().to_path_buf();
 
-        let version = AssetVersion::new(
-            asset.id,
-            1,
-            file_path,
-            "provider",
-            "model",
-            "prompt",
-        )
-        .expect("version");
+        let version = AssetVersion::new(asset.id, 1, file_path, "provider", "model", "prompt")
+            .expect("version");
         asset_version_repository::insert(&db.conn(), &version).expect("insert");
 
         let clip = TimelineClip::new(timeline.id, version.id, Track::Video, 0, 5000).expect("clip");

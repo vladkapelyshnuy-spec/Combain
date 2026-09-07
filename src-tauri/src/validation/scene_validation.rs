@@ -12,7 +12,10 @@ use crate::repository::scene_repository;
 /// Validate that a project has at least one scene.
 ///
 /// Returns all scenes for the project, or an error if none exist.
-pub fn validate_scenes_exist(conn: &Connection, project_id: ProjectId) -> Result<Vec<Scene>, AppError> {
+pub fn validate_scenes_exist(
+    conn: &Connection,
+    project_id: ProjectId,
+) -> Result<Vec<Scene>, AppError> {
     let scenes = scene_repository::list_by_project(conn, project_id)?;
 
     if scenes.is_empty() {
@@ -33,7 +36,9 @@ pub fn validate_scenes_exist(conn: &Connection, project_id: ProjectId) -> Result
 /// - No gaps in ordering
 pub fn validate_scene_order(scenes: &[Scene]) -> Result<(), AppError> {
     if scenes.is_empty() {
-        return Err(AppError::invalid_input("cannot validate order of empty scene list"));
+        return Err(AppError::invalid_input(
+            "cannot validate order of empty scene list",
+        ));
     }
 
     // Scenes should already be ordered by the repository, but verify
